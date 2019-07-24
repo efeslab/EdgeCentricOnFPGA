@@ -44,8 +44,8 @@ module sssp_pipeline #(
          * we remember the prefix of the addresses. Since the address
          * is always 256 aligned, the prefix should be the same for all
          * imported edges. */
-        if (control == 1) begin
-            w_addr_prefix = w_addr[31:ADDR_W];
+        if (control == 2'h1 & word_in_valid) begin
+            w_addr_prefix <= w_addr[31:ADDR_W];
         end
     end
 
@@ -60,7 +60,7 @@ module sssp_pipeline #(
         .cl_in(word_in),
         .w_addr(w_addr[ADDR_W-1:0]),
         .r_addr(target_edge.src[ADDR_W-1:0]),
-        .we_in((control==1) & (word_in_valid)),
+        .we_in((control == 2'h1) & (word_in_valid)),
         .vertex_out(vertex_out)
         );
 
@@ -114,7 +114,7 @@ module sssp_pipeline #(
 
             /* We add an additional stage here to satisfy the timing
              * requirement easier. */
-            should_update <= (word_in_valid_qq) & (control == 2);
+            should_update <= (word_in_valid_qq) & (control == 2'h2);
             /* We need to check the prefix since the address only
              * contains the last 8 bits. */
             prefix_match <= (w_addr_prefix == target_edge_qq.src[31:ADDR_W]);

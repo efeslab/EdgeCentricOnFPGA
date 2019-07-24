@@ -14,7 +14,8 @@ module vertex_bank #(
     localparam DEPTH = (2**ADDR_W);
     vertex_t ram [DEPTH-1:0]  /* synthesis ramstyle = "no_rw_check" */;
 
-    always @(posedge clk) begin
+    always_ff @(posedge clk)
+    begin
         vertex_out <= ram[r_addr];
         if (we_in) begin
             ram[w_addr] <= vertex_in;
@@ -58,7 +59,8 @@ module vertex_ram #(
         end
     endgenerate
 
-    always @(posedge clk) begin
+    always_ff @(posedge clk)
+    begin
         vertex_out <= bank[r_addr_buff];
         r_addr_buf <= r_addr[2:0];
     end
