@@ -1,106 +1,132 @@
-`timescale 1ns / 1ps
+`include "graph.vh"
 
-module sssp_pipeline(
-    clk,
-    rst,
-	last_input_in,
-    word_in,
-    word_in_valid,
-    control,
-    current_level,
-    control_out,
-    last_input_out,
-	word_out,
-    valid_out,
-	word_in_valid_out
- );
+module sssp_pipeline #(
+    parameter ADDR_W = 8, pipeline_id = 0
+)
+(
+    input logic clk,
+    input logic rst,
+	input logic last_input_in,
+    input logic [511:0] word_in,
+    input logic [31:0] w_addr,
+    input logic word_in_valid,
+    input logic [1:0] control,
+    input logic [15:0] current_level,
+    input logic [1:0] control_out,
+    output logic last_input_out,
+	output logic [63:0] word_out,
+    output logic valid_out,
+	output logic word_in_valid_out
+);
 
-parameter ADDR_W = 2;               
-parameter pipeline_id = 0; 
-parameter DATA_W = 32;  
+    vertex_t vertex_out;
 
-input   clk, rst;
-input   [511:0]             word_in;
-input   [0:0]        		word_in_valid;
-input   [1:0]               control;
-input   [7:0]               current_level;     
-input	[0:0]				last_input_in;
+    reg	last_input_q;
+    reg	last_input_qq;
+    reg	last_input_qqq;
 
+    logic [1:0] control_q;
+    logic [1:0] control_qq;
+    logic [1:0] control_qqq;
 
-output	reg	[0:0]	last_input_out;
-reg	[0:0]	last_input_buff;
-reg	[0:0]	last_input_buff_2;
+    logic word_in_valid_q;
+    logic word_in_valid_qq;
+    logic word_in_valid_qq;
 
-output  reg [63:0]          word_out;
-output  reg                 valid_out;
-output  reg [1:0]           control_out;
-output  reg [0:0]			word_in_valid_out;  // from afu-io
+    edge_t target_edge;
+    edge_t target_edge_q;
+    edge_t target_edge_qq;
+    assign target_edge = edge_t'(word_in[pipeline_id*128+127:pipeline_id*128]);
 
+    logic [23:0] w_addr_prefix;
+    always @(posedge clk) begin
+        /* if control is 1, which means the afu is importing vertices,
+         * we remember the prefix of the addresses. Since the address
+         * is always 256 aligned, the prefix should be the same for all
+         * imported edges. */
+        if (control == 1) begin
+            w_addr_prefix = w_addr[31:ADDR_W];
+        end
+    end
 
-wire   	[31:0]                	 bram_out;
-reg    	[1:0]                     control_out_buff;
-reg    	[1:0]                     control_out_buff_2;
+    logic should_update;
+    logic prefix_match;
+    logic level_match;
+    logic [63:0] word_out_prepare;
 
-reg 	[0:0]					 word_in_valid_buff;      
-reg 	[0:0]					 word_in_valid_buff_2;  
-reg    	[511:0]               word_in_out_buff;
-reg    	[511:0]               word_in_out_buff_2;    
+    vertex_ram #(.ADDR_W(ADDR_W))
+    bram0(
+        .clk(clk),
+        .cl_in(word_in),
+        .w_addr(w_addr[ADDR_W-1:0]),
+        .r_addr(target_edge.src[ADDR_W-1:0]),
+        .we_in((control==1) & (word_in_valid)),
+        .vertex_out(vertex_out)
+        );
 
-   
-    
-	multi_bank_bram #(.DATA_W(DATA_W),.ADDR_W(ADDR_W)) 
-	bram0 (
-	  .data_in(word_in), 
-	  //.r_addr(word_in[63:32]),
-	  .r_addr(word_in[ADDR_W+3+40+pipeline_id*64:40+pipeline_id*64]),
-	  .we_in((control==1) & (word_in_valid)),
-	  //.we_in(control),
-	  .clk(clk),
-	  //.rst(rst),
-	  .data_out(bram_out)
-	);
-	
-	always @(posedge clk) begin
+    always @(posedge clk) begin
         if (rst) begin
-            word_out <=0;
-            valid_out<=1'b0;
-            control_out <= 0;
-            control_out_buff <=0;
-            control_out_buff_2 <=0;
-			last_input_buff		<=0;
-			last_input_buff_2	<=0;
-			word_in_valid_buff <=0;  
-			word_in_valid_buff_2 <=0; 
-			word_in_valid_out <=0;
-			word_in_out_buff <=0;
-			word_in_out_buff_2 <=0;
-        end else begin     			
-			control_out <= control_out_buff_2;	
-			control_out_buff_2 <= control_out_buff;
-			control_out_buff <= control;
-			last_input_buff <= last_input_in;
-			last_input_buff_2 <= last_input_buff;
-			last_input_out <= last_input_buff_2;
-		
-			word_in_valid_out <= word_in_valid_buff_2;
-			word_in_valid_buff_2 <= word_in_valid_buff;
-			word_in_valid_buff <= word_in_valid;
-			
-			word_in_out_buff_2 <= word_in_out_buff;
-			word_in_out_buff <= word_in;
-			word_out <= 0; 
+            word_out <= 64'h0;
+            valid_out <= 1'b0;
+
+            control_out <= 2'h0;
+            control_out_q <= 2'h0;
+            control_out_qq <= 2'h0;
+            control_out_qqq <= 2'h0;
+
+            last_input_out <= 1'b0;
+            last_input_q <= 1'b0;
+            last_input_qq <= 1'b0;
+            last_input_qqq <= 1'b0;
+
+			word_in_valid_out <= 1'b0;
+			word_in_valid_q <= 1'b0;  
+			word_in_valid_qq <= 1'b0; 
+            word_in_valid_qqq <= 1'b0;
+
+            target_edge_q <= edge_t'(0);
+            target_edge_qq <= edge_t'(0);
+        end
+        else begin
+
+            /* The block ram needs two cycles to get the value out,
+             * and we add an additional cycle. */
+            control_out <= control_out_qqq;
+            control_out_qqq <= control_out_qq;
+            control_out_qq <= control_out_q;
+            control_out_q <= control;
+
+			last_input_out <= last_input_qqq;
+			last_input_qqq <= last_input_qq;
+			last_input_qq <= last_input_q;
+            last_input_q <= last_input_in;
+
+			word_in_valid_out <= word_in_valid_qqq;
+			word_in_valid_qqq <= word_in_valid_qq;
+			word_in_valid_qq <= word_in_valid_q;
+			word_in_valid_q <= word_in_valid;
+
+            target_edge_qq <= target_edge_q;
+            target_edge_q <= target_edge;
+
+			word_out <= 64'h0; 
 			valid_out <= 1'b0;
 
-			if ((word_in_valid_buff_2)&(control==2)) begin     
-				if(bram_out[7:0] == current_level)   begin 	                
-					 word_out  <= {8'h00, word_in_out_buff_2[39+pipeline_id*64:16+pipeline_id*64], 8'h00, (word_in_out_buff_2[15+pipeline_id*64:0+pipeline_id*64]+bram_out[31:8])}; 
-					 valid_out <= 1'b1; 
-				end	                                                                                       
-			end	
-        end    
-    end 
-   
+            /* We add an additional stage here to satisfy the timing
+             * requirement easier. */
+            should_update <= (word_in_valid_qq) & (control == 2);
+            /* We need to check the prefix since the address only
+             * contains the last 8 bits. */
+            prefix_match <= (w_addr_prefix == target_edge_qq.src[31:ADDR_W]);
+            level_match <= (vertex_out.level == current_level);
+            word_out_prepare <=
+                {target_edge_qq.dst, target_edge_qq.weight + vertex_out.weight};
+
+            if (should_update & level_match & prefix_match) begin
+                word_out <= word_out_prepare;
+                valid_out <= 1'b1;
+            end
+        end
+    end
+
 endmodule
-
-
-

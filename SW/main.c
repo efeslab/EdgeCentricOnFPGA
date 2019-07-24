@@ -10,11 +10,11 @@
 static int debug = 0;
 
 typedef struct {
-    uint64_t weight:32;
-    uint64_t level:16;
-    uint64_t winf:1;
-    uint64_t linf:1;
-    uint64_t rsvd:14;
+    uint32_t weight;
+    uint16_t level;
+    uint16_t winf:1;
+    uint16_t linf:1;
+    uint16_t rsvd:14;
 } vertex_t;
 
 #define VERTEX_PER_CL (CL/sizeof(vertex_t))
