@@ -40,7 +40,7 @@ module sssp #(
                 .current_level(current_level),
                 .last_input_out(pipeline_last_input_out[k]),
                 .word_out(pipeline_word_out[k]),
-                .valid_out(pipeline_word_out_valid[k]),
+                .valid_out(pipeline_word_out_valid[k])
                 );
         end
     endgenerate
@@ -86,7 +86,7 @@ module sssp #(
                 update_entry_count <= total_counter + buffer_counter;
                 if (buffer_counter) begin
                     for (i = 0; i < 8; i = i + 1) begin
-                        word_out[i * 64 + 63: i * 64] <= update_buffer[i];
+                        word_out[i * 64 +: 64] <= update_buffer[i];
                     end
                     word_out_valid <= 1'b1;
                 end
@@ -111,9 +111,9 @@ module sssp #(
                             word_out_valid <= 1'b1;
 
                             for (i = 0; i < 7; i = i + 1) begin
-                                word_out[i * 64 + 63: i * 64] <= update_buffer[i];
+                                word_out[i * 64 +: 64] <= update_buffer[i];
                             end
-                            word_out[7 * 64 + 63: 7 * 64] <= filter_word_out[0];
+                            word_out[7 * 64 +: 64] <= filter_word_out[0];
 
                             total_counter <= total_counter + 8;
                         end
@@ -130,10 +130,10 @@ module sssp #(
                             word_out_valid <= 1'b1;
 
                             for (i = 0; i < 6; i = i + 1) begin
-                                word_out[i * 64 + 63: i * 64] <= update_buffer[i];
+                                word_out[i * 64 +: 64] <= update_buffer[i];
                             end
-                            word_out[6 * 64 + 63: 6 * 64] <= filter_word_out[0];
-                            word_out[7 * 64 + 63: 7 * 64] <= filter_word_out[1];
+                            word_out[6 * 64 +: 64] <= filter_word_out[0];
+                            word_out[7 * 64 +: 64] <= filter_word_out[1];
 
                             total_counter <= total_counter + 8;
                         end
@@ -142,9 +142,9 @@ module sssp #(
                             word_out_valid <= 1'b1;
 
                             for (i = 0; i < 7; i = i + 1) begin
-                                word_out[i * 64 + 63: i * 64] <= update_buffer[i];
+                                word_out[i * 64 +: 64] <= update_buffer[i];
                             end
-                            word_out[7 * 64 + 63: 7 * 64] <= filter_word_out[0];
+                            word_out[7 * 64 +: 64] <= filter_word_out[0];
                             update_buffer[0] <= filter_word_out[1];
 
                             total_counter <= total_counter + 8;
@@ -163,11 +163,11 @@ module sssp #(
                             word_out_valid <= 1'b1;
 
                             for (i = 0; i < 5; i = i + 1) begin
-                                word_out[i * 64 + 63: i * 64] <= update_buffer[i];
+                                word_out[i * 64 +: 64] <= update_buffer[i];
                             end
-                            word_out[5 * 64 + 63: 5 * 64] <= filter_word_out[0];
-                            word_out[6 * 64 + 63: 6 * 64] <= filter_word_out[1];
-                            word_out[7 * 64 + 63: 7 * 64] <= filter_word_out[2];
+                            word_out[5 * 64 +: 64] <= filter_word_out[0];
+                            word_out[6 * 64 +: 64] <= filter_word_out[1];
+                            word_out[7 * 64 +: 64] <= filter_word_out[2];
 
                             total_counter <= total_counter + 8;
                         end
@@ -176,10 +176,10 @@ module sssp #(
                             word_out_valid <= 1'b1;
 
                             for (i = 0; i < 6; i = i + 1) begin
-                                word_out[i * 64 + 63: i * 64] <= update_buffer[i];
+                                word_out[i * 64 +: 64] <= update_buffer[i];
                             end
-                            word_out[6 * 64 + 63: 6 * 64] <= filter_word_out[0];
-                            word_out[7 * 64 + 63: 7 * 64] <= filter_word_out[1];
+                            word_out[6 * 64 +: 64] <= filter_word_out[0];
+                            word_out[7 * 64 +: 64] <= filter_word_out[1];
                             update_buffer[0] <= filter_word_out[2];
 
                             total_counter <= total_counter + 8;
@@ -189,9 +189,9 @@ module sssp #(
                             word_out_valid <= 1'b1;
 
                             for (i = 0; i < 7; i = i + 1) begin
-                                word_out[i * 64 + 63: i * 64] <= update_buffer[i];
+                                word_out[i * 64 +: 64] <= update_buffer[i];
                             end
-                            word_out[7 * 64 + 63: 7 * 64] <= filter_word_out[0];
+                            word_out[7 * 64 +: 64] <= filter_word_out[0];
                             update_buffer[0] <= filter_word_out[1];
                             update_buffer[1] <= filter_word_out[2];
 
@@ -211,10 +211,10 @@ module sssp #(
                             word_out_valid <= 1'b1;
 
                             for (i = 0; i < 4; i = i + 1) begin
-                                word_out[i * 64 + 63: i * 64] <= update_buffer[i];
+                                word_out[i * 64 +: 64] <= update_buffer[i];
                             end
                             for (i = 0; i < 4; i = i + 1) begin
-                                word_out[(4 + i) * 64 + 63: (4 + i) * 64] <= filter_word_out[i];
+                                word_out[(4 + i) * 64 +: 64] <= filter_word_out[i];
                             end
 
                             total_counter <= total_counter + 8;
@@ -224,10 +224,10 @@ module sssp #(
                             word_out_valid <= 1'b1;
 
                             for (i = 0; i < 5; i = i + 1) begin
-                                word_out[i * 64 + 63: i * 64] <= update_buffer[i];
+                                word_out[i * 64 +: 64] <= update_buffer[i];
                             end
                             for (i = 0; i < 3; i = i + 1) begin
-                                word_out[(5 + i) * 64 + 63: (5 + i) * 64] <= filter_word_out[i];
+                                word_out[(5 + i) * 64 +: 64] <= filter_word_out[i];
                             end
                             update_buffer[0] <= filter_word_out[3];
 
@@ -238,10 +238,10 @@ module sssp #(
                             word_out_valid <= 1'b1;
 
                             for (i = 0; i < 6; i = i + 1) begin
-                                word_out[i * 64 + 63: i * 64] <= update_buffer[i];
+                                word_out[i * 64 +: 64] <= update_buffer[i];
                             end
                             for (i = 0; i < 2; i = i + 1) begin
-                                word_out[(6 + i) * 64 + 63: (6 + i) * 64] <= filter_word_out[i];
+                                word_out[(6 + i) * 64 +: 64] <= filter_word_out[i];
                             end
                             update_buffer[0] <= filter_word_out[2];
                             update_buffer[1] <= filter_word_out[3];
@@ -253,9 +253,9 @@ module sssp #(
                             word_out_valid <= 1'b1;
 
                             for (i = 0; i < 7; i = i + 1) begin
-                                word_out[i * 64 + 63: i * 64] <= update_buffer[i];
+                                word_out[i * 64 +: 64] <= update_buffer[i];
                             end
-                            word_out[7 * 64 + 63: 7 * 64] <= filter_word_out[0];
+                            word_out[7 * 64 +: 64] <= filter_word_out[0];
                             update_buffer[0] <= filter_word_out[1];
                             update_buffer[1] <= filter_word_out[2];
                             update_buffer[2] <= filter_word_out[3];

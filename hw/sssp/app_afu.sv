@@ -183,7 +183,6 @@ module sssp_app_top
     end
 
 
-	logic csr_ctl_start;
     always_ff @(posedge clk)
     begin
 		if (reset)
@@ -252,8 +251,8 @@ module sssp_app_top
     logic [31:0] dma_src_ncl;
     logic dma_start;
     logic dma_drop;
-    logic [511:0] dma_out;
-    logic dma_out_valid;
+    logic [511:0] dma_out, dma_out_q;
+    logic dma_out_valid, dma_out_valid_q;
     logic dma_done;
 
     dma_read_engine dma_read(
@@ -283,10 +282,10 @@ module sssp_app_top
     sssp sssp_inst(
         .clk(clk),
         .rst(reset),
-        .last_input_in(sssp_last_input_in),
-        .word_in(dma_out),
+        .last_input_in(dma_done),
+        .word_in(dma_out_q),
         .w_addr(sssp_word_in_addr),
-        .word_in_valid(dma_out_valid),
+        .word_in_valid(dma_out_valid_q),
         .control(sssp_control),
         .current_level(sssp_current_level),
         .done(sssp_done),
@@ -342,7 +341,7 @@ module sssp_app_top
 
     always_comb
     begin
-        sTx.c1.hdr.sop 1= 1'b1;
+        sTx.c1.hdr.sop = 1'b1;
         sTx.c1.hdr.vc_sel = eVC_VA;
         sTx.c1.hdr.cl_len = eCL_LEN_1;
         sTx.c1.hdr.req_type = eREQ_WRLINE_I;
@@ -360,10 +359,10 @@ module sssp_app_top
             edge_dma_started <= 0;
         end
         else begin
-            case (state)
-                sssp_reset <= 0;
-                dma_drop <= (fifo_c1tx_count >= 2);
+            sssp_reset <= 0;
+            dma_drop <= (fifo_c1tx_count >= 2);
 
+            case (state)
                 MAIN_FSM_IDLE: begin
                     dma_start <= 0;
                     vertex_dma_started <= 0;
@@ -375,7 +374,6 @@ module sssp_app_top
                     write_cls <= 0;
 
                     num_write_req <= 0;
-                    num_write_rsp <= 0;
                 end
                 MAIN_FSM_READ_VERTEX: begin
                     /* start dma when entering this state */
@@ -393,15 +391,15 @@ module sssp_app_top
 
                     /* configure sssp */
                     sssp_control <= 2'b01;
-                    sssp_word_in_addr <= (sssp_word_in_addr + dma_out_valid) << 3;
+                    sssp_word_in_addr <= (sssp_word_in_addr + dma_out_valid_q) << 3;
                 end
                 MAIN_FSM_PROCESS_EDGE: begin
                     /* send out requests */
                     sTx.c1.valid <= sssp_word_out_valid;
                     sTx.c1.hdr.address <= csr_update_bin_addr + write_cls;
                     sTx.c1.data <= sssp_word_out;
-                    write_cls <= write_cls + word_out_valid;
-                    num_write_req <= num_write_req + word_out_valid;
+                    write_cls <= write_cls + sssp_word_out_valid;
+                    num_write_req <= num_write_req + sssp_word_out_valid;
 
                     /* start dma when entering this state */
                     if (edge_dma_started) begin
@@ -418,13 +416,13 @@ module sssp_app_top
 
                     /* configure sssp */
                     sssp_control <= 2'b10;
-                    sssp_level <= csr_level;
+                    sssp_current_level <= csr_level;
                 end
                 MAIN_FSM_WRITE_RESULT: begin
                     num_write_req <= num_write_req + 1;
                     sTx.c1.valid <= 1;
                     sTx.c1.hdr.address <= csr_status_addr;
-                    sTx.c1.data <= {256'h0, 32'h0, update_entry_count, 64'h1};
+                    sTx.c1.data <= {256'h0, 32'h0, sssp_update_entry_count, 64'h1};
                 end
                 MAIN_FSM_FINISH: begin
                     /* do nothing here */

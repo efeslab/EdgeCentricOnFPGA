@@ -127,8 +127,8 @@ module dma_read_engine
                         $finish;
                     end
                 end
-                STATE_READ_PAUSE:
-                STATE_READ_WAIT:
+                STATE_READ_PAUSE,
+                STATE_READ_WAIT,
                 STATE_FINISH: begin
                     /* do nothing here */
                 end
@@ -160,8 +160,8 @@ module dma_read_engine
                 STATE_IDLE: begin
                     rsp_idx <= 0;
                 end
-                STATE_READ_PAUSE:
-                STATE_READ_WAIT:
+                STATE_READ_PAUSE,
+                STATE_READ_WAIT,
                 STATE_READ_RUN: begin
                     /* Here we need to check the drop id, when mdata and drop id
                      * are not the same, the response should be dropped */

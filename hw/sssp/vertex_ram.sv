@@ -1,7 +1,7 @@
 `include "graph.vh"
 
 module vertex_bank #(
-    parameter ADRR_W = 5)
+    parameter ADDR_W = 5)
 (
     input clk,
     input vertex_t vertex_in,
@@ -47,7 +47,7 @@ module vertex_ram #(
             vertex_t v;
             assign v = vertex_t'(cl_in[i * 32 + 49: i * 32]);
 
-            bram #(.ADDR_W(ADDR_W))
+            vertex_bank #(.ADDR_W(ADDR_W-3))
             banks(
                 .clk(clk),
                 .vertex_in(v),
@@ -62,7 +62,7 @@ module vertex_ram #(
     always_ff @(posedge clk)
     begin
         vertex_out <= bank[r_addr_buff];
-        r_addr_buf <= r_addr[2:0];
+        r_addr_buff <= r_addr[2:0];
     end
 
 endmodule

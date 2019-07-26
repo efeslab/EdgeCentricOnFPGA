@@ -3,22 +3,22 @@ module filter(
     input logic rst,
 
     input logic last_input_in,
-    input logic word_in_valid [3:0],
+    input logic [3:0] word_in_valid,
     input logic [63:0] word_in [3:0],
 
     output logic last_input_out,
-    output logic word_out_valid [3:0],
-    output logic [63:0] word_out [3:0],
+    output logic [3:0] word_out_valid,
+    output logic [63:0] word_out [3:0]
 );
 
     logic [63:0] s0 [3:0];
     logic [63:0] s1 [3:0];
     logic [63:0] s2 [3:0];
     logic [63:0] s3 [3:0];
-    logic v0 [3:0];
-    logic v1 [3:0];
-    logic v2 [3:0];
-    logic v3 [3:0];
+    logic [3:0] v0;
+    logic [3:0] v1;
+    logic [3:0] v2;
+    logic [3:0] v3;
 
     logic li0, li1, li2, li3;
 
@@ -27,20 +27,28 @@ module filter(
     /* stage 0: input */
     always_comb
     begin
-        for (i = 0; i < 4; i = i + 1) begin
-            s0[i] = word_in[i];
-            v0[i] = word_in_valid[i];
-            li0 = last_input_in;
-        end
+        s0[0] = word_in[0];
+        s0[1] = word_in[1];
+        s0[2] = word_in[2];
+        s0[3] = word_in[3];
+        v0[0] = word_in_valid[0];
+        v0[1] = word_in_valid[1];
+        v0[2] = word_in_valid[2];
+        v0[3] = word_in_valid[3];
+        li0 = last_input_in;
     end
 
     /* stage 1: compare w0:w1 and w2:w3 */
     always_ff @(posedge clk) begin
         if (rst) begin
-            for (i = 0; i < 4; i = i + 1) begin
-                s1[i] <= 0;
-                v1[i] <= 0;
-            end
+            s1[0] <= 0;
+            s1[1] <= 0;
+            s1[2] <= 0;
+            s1[3] <= 0;
+            v1[0] <= 0;
+            v1[1] <= 0;
+            v1[2] <= 0;
+            v1[3] <= 0;
             li1 <= 0;
         end
         else begin
@@ -77,10 +85,14 @@ module filter(
     /* stage 2: compare w1:w2 */
     always_ff @(posedge clk) begin
         if (rst) begin
-            for (i = 0; i < 4; i = i + 1) begin
-                s2[i] <= 0;
-                v2[i] <= 0;
-            end
+                s2[0] <= 0;
+                s2[1] <= 0;
+                s2[2] <= 0;
+                s2[3] <= 0;
+                v2[0] <= 0;
+                v2[1] <= 0;
+                v2[2] <= 0;
+                v2[3] <= 0;
             li2 <= 0;
         end
         else begin
@@ -107,10 +119,14 @@ module filter(
     /* stage 3: compare w0:w1 and w2:w3 */
     always_ff @(posedge clk) begin
         if (rst) begin
-            for (i = 0; i < 4; i = i + 1) begin
-                s3[i] <= 0;
-                v3[i] <= 0;
-            end
+                s3[0] <= 0;
+                s3[1] <= 0;
+                s3[2] <= 0;
+                s3[3] <= 0;
+                v3[0] <= 0;
+                v3[1] <= 0;
+                v3[2] <= 0;
+                v3[3] <= 0;
             li3 <= 0;
         end
         else begin
@@ -147,10 +163,14 @@ module filter(
     /* output */
     always_comb
     begin
-        for (i = 0; i < 4; i = i + 1) begin
-            word_out[i] = s3[i];
-            word_out_valid[i] = v3[i];
-        end
+            word_out[0] = s3[0];
+            word_out[1] = s3[1];
+            word_out[2] = s3[2];
+            word_out[3] = s3[3];
+            word_out_valid[0] = v3[0];
+            word_out_valid[1] = v3[1];
+            word_out_valid[2] = v3[2];
+            word_out_valid[3] = v3[3];
         last_input_out = li3;
     end
 

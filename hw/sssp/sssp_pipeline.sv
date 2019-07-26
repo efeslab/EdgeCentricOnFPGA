@@ -31,7 +31,7 @@ module sssp_pipeline #(
 
     logic word_in_valid_q;
     logic word_in_valid_qq;
-    logic word_in_valid_qq;
+    logic word_in_valid_qqq;
 
     edge_t target_edge;
     edge_t target_edge_q;
@@ -72,9 +72,9 @@ module sssp_pipeline #(
             valid_out <= 1'b0;
 
             control_out <= 2'h0;
-            control_out_q <= 2'h0;
-            control_out_qq <= 2'h0;
-            control_out_qqq <= 2'h0;
+            control_q <= 2'h0;
+            control_qq <= 2'h0;
+            control_qqq <= 2'h0;
 
             last_input_out <= 1'b0;
             last_input_q <= 1'b0;
@@ -93,10 +93,10 @@ module sssp_pipeline #(
 
             /* The block ram needs two cycles to get the value out,
              * and we add an additional cycle. */
-            control_out <= control_out_qqq;
-            control_out_qqq <= control_out_qq;
-            control_out_qq <= control_out_q;
-            control_out_q <= control;
+            control_out <= control_qqq;
+            control_qqq <= control_qq;
+            control_qq <= control_q;
+            control_q <= control;
 
 			last_input_out <= last_input_qqq;
 			last_input_qqq <= last_input_qq;
