@@ -90,6 +90,7 @@ module sssp_app_top
     /* sTx.c1 needs a buffer */
     logic fifo_c1tx_rdack, fifo_c1tx_dout_v, fifo_c1tx_full, fifo_c1tx_almFull;
     t_if_ccip_c1_Tx fifo_c1tx_dout;
+    logic [7:0] fifo_c1tx_count;
 	sync_C1Tx_fifo_copy #(
 		.DATA_WIDTH($bits(t_if_ccip_c1_Tx)),
 		.CTL_WIDTH(0),
@@ -109,7 +110,7 @@ module sssp_app_top
 		.T0_fifo_dout_v(fifo_c1tx_dout_v),
 		.T0_fifo_empty(),
 		.T0_fifo_full(fifo_c1tx_full),
-		.T0_fifo_count(),
+		.T0_fifo_count(fifo_c1tx_count),
 		.T0_fifo_almFull(fifo_c1tx_almFull),
 		.T0_fifo_underflow(),
 		.T0_fifo_overflow()
@@ -137,55 +138,25 @@ module sssp_app_top
         end
     end
         
-    // =========================================================================
-    //
-    //   CSR (MMIO) handling.
-    //
-    // =========================================================================
-
-    // The AFU ID is a unique ID for a given program.  Here we generated
-    // one with the "uuidgen" program and stored it in the AFU's JSON file.
-    // ASE and synthesis setup scripts automatically invoke afu_json_mgr
-    // to extract the UUID into afu_json_info.vh.
     logic [127:0] afu_id = `AFU_ACCEL_UUID;
 
-    //
-    // A valid AFU must implement a device feature list, starting at MMIO
-    // address 0.  Every entry in the feature list begins with 5 64-bit
-    // words: a device feature header, two AFU UUID words and two reserved
-    // words.
-    //
-
-    // Is a CSR read request active this cycle?
-    logic is_csr_read;
-    assign is_csr_read = sRx.c0.mmioRdValid;
-
-    // Is a CSR write request active this cycle?
-    logic is_csr_write;
-    assign is_csr_write = sRx.c0.mmioWrValid;
-
-    // The MMIO request header is overlayed on the normal c0 memory read
-    // response data structure.  Cast the c0Rx header to an MMIO request
-    // header.
     t_ccip_c0_ReqMmioHdr mmio_req_hdr;
     assign mmio_req_hdr = t_ccip_c0_ReqMmioHdr'(sRx.c0.hdr);
 
 
-    //
-    // Implement the device feature list by responding to MMIO reads.
-    //
-	//RW
 	localparam MMIO_CSR_STATUS_ADDR = 0;
     localparam MMIO_CSR_VERTEX_ADDR = 1;
     localparam MMIO_CSR_VERTEX_NCL = 2;
     localparam MMIO_CSR_EDGE_ADDR = 3;
     localparam MMIO_CSR_EDGE_NCL = 4;
-    localparam MMIO_CSR_LEVEL = 5;
-    localparam MMIO_CSR_CONTROL = 6;
+    localparam MMIO_CSR_UPDATE_BIN_ADDR = 5;
+    localparam MMIO_CSR_LEVEL = 6;
+    localparam MMIO_CSR_CONTROL = 7;
 
     t_ccip_clAddr csr_status_addr;
     t_ccip_clAddr csr_vertex_addr;
     t_ccip_clAddr csr_edge_addr;
+    t_ccip_clAddr csr_update_bin_addr;
     logic [31:0] csr_vertex_ncl;
     logic [31:0] csr_edge_ncl;
     logic [15:0] csr_level;
@@ -205,15 +176,11 @@ module sssp_app_top
 		csrs.cpu_rd_csrs[MMIO_CSR_VERTEX_NCL].data = t_ccip_mmioData'(csr_vertex_ncl);
         csrs.cpu_rd_csrs[MMIO_CSR_EDGE_ADDR].data = t_ccip_mmioData'(csr_edge_addr);
 		csrs.cpu_rd_csrs[MMIO_CSR_EDGE_NCL].data = t_ccip_mmioData'(csr_edge_ncl);
+        csrs.cpu_rd_csrs[MMIO_CSR_UPDATE_BIN_ADDR].data = t_ccip_mmioData'(csr_update_bin_addr);
         csrs.cpu_rd_csrs[MMIO_CSR_LEVEL].data = t_ccip_mmioData'(csr_level);
         csrs.cpu_rd_csrs[MMIO_CSR_CONTROL].data = t_ccip_mmioData'(0);
 
     end
-
-    //
-    // CSR write handling.  Host software must tell the AFU the memory address
-    // to which it should be writing.  The address is set by writing a CSR.
-    //
 
 
 	logic csr_ctl_start;
@@ -251,6 +218,10 @@ module sssp_app_top
                 csr_edge_ncl <= csrs.cpu_wr_csrs[MMIO_CSR_EDGE_NCL].data[31:0];
             end
 
+            if (csrs.cpu_wr_csrs[MMIO_CSR_UPDATE_BIN_ADDR].en) begin
+                csr_edge_ncl <= csrs.cpu_wr_csrs[MMIO_CSR_UPDATE_BIN_ADDR].data[31:0];
+            end
+
             if (csrs.cpu_wr_csrs[MMIO_CSR_LEVEL].en) begin
                 csr_level <= csrs.cpu_wr_csrs[MMIO_CSR_LEVEL].data[15:0];
             end
@@ -272,31 +243,215 @@ module sssp_app_top
     typedef enum {
         MAIN_FSM_IDLE,
         MAIN_FSM_READ_VERTEX,
-        MAIN_FSM_PROCESS_EDGE
+        MAIN_FSM_PROCESS_EDGE,
+        MAIN_FSM_WRITE_RESULT,
+        MAIN_FSM_FINISH
     } main_fsm_state_t;
 
+    t_ccip_clAddr dma_src_addr;
+    logic [31:0] dma_src_ncl;
+    logic dma_start;
+    logic dma_drop;
+    logic [511:0] dma_out;
+    logic dma_out_valid;
+    logic dma_done;
 
-	/*
-	 * handle memory write response
-	 */
+    dma_read_engine dma_read(
+        .clk(clk),
+        .reset(reset),
+        .src_addr(dma_src_addr),
+        .src_ncl(dma_src_ncl),
+        .start(dma_start),
+        .drop(dma_drop),
+        .c0rx(sRx.c0),
+        .c0TxAlmFull(sRx.c0TxAlmFull),
+        .c0tx(sTx.c0),
+        .out(dma_out),
+        .out_valid(dma_out_valid),
+        .done(dma_done)
+        );
+
+    logic [31:0] sssp_word_in_addr;
+    logic [1:0] sssp_control;
+    logic [15:0] sssp_current_level;
+    logic sssp_done;
+    logic [31:0] sssp_update_entry_count;
+    logic [511:0] sssp_word_out;
+    logic sssp_word_out_valid;
+    logic sssp_reset;
+
+    sssp sssp_inst(
+        .clk(clk),
+        .rst(reset),
+        .last_input_in(sssp_last_input_in),
+        .word_in(dma_out),
+        .w_addr(sssp_word_in_addr),
+        .word_in_valid(dma_out_valid),
+        .control(sssp_control),
+        .current_level(sssp_current_level),
+        .done(sssp_done),
+        .update_entry_count(sssp_update_entry_count),
+        .word_out(sssp_word_out),
+        .word_out_valid(sssp_word_out_valid)
+        );
+
+    logic write_result_done;
+    logic responses_received;
+
+    /* the main state machine */
+    main_fsm_state_t state;
+    always_ff @(posedge clk)
+    begin
+        if (reset) begin
+            state <= MAIN_FSM_IDLE;
+        end
+        else begin
+            case (state)
+                MAIN_FSM_IDLE: begin
+                     if (csr_ctl_start) begin
+                         state <= MAIN_FSM_READ_VERTEX;
+                     end
+                end
+                MAIN_FSM_READ_VERTEX: begin
+                    if (dma_done) begin
+                        state <= MAIN_FSM_PROCESS_EDGE;
+                    end
+                end
+                MAIN_FSM_PROCESS_EDGE: begin
+                    if (sssp_done) begin
+                        state <= MAIN_FSM_WRITE_RESULT;
+                    end
+                end
+                MAIN_FSM_WRITE_RESULT: begin
+                    state <= MAIN_FSM_FINISH;
+                end
+                MAIN_FSM_FINISH: begin
+                    if (responses_received) begin
+                        state <= MAIN_FSM_IDLE;
+                    end
+                end
+            endcase
+        end
+    end
+
+    logic vertex_dma_started;
+    logic edge_dma_started;
+    logic [31:0] write_cls;
+    logic [31:0] num_write_req;
+    logic [31:0] num_write_rsp;
+
+    always_comb
+    begin
+        sTx.c1.hdr.sop 1= 1'b1;
+        sTx.c1.hdr.vc_sel = eVC_VA;
+        sTx.c1.hdr.cl_len = eCL_LEN_1;
+        sTx.c1.hdr.req_type = eREQ_WRLINE_I;
+        sTx.c1.hdr.mdata = 0;
+        sTx.c1.hdr.rsvd0 = 0;
+        sTx.c1.hdr.rsvd1 = 0;
+    end
+
+    /* dma read, sssp, and write request */
+    always_ff @(posedge clk)
+    begin
+        if (reset) begin
+            sssp_reset <= 1;
+            vertex_dma_started <= 0;
+            edge_dma_started <= 0;
+        end
+        else begin
+            case (state)
+                sssp_reset <= 0;
+                dma_drop <= (fifo_c1tx_count >= 2);
+
+                MAIN_FSM_IDLE: begin
+                    dma_start <= 0;
+                    vertex_dma_started <= 0;
+                    edge_dma_started <= 0;
+
+                    sssp_reset <= 1;
+                    sssp_control <= 0;
+                    sssp_word_in_addr <= 0;
+                    write_cls <= 0;
+
+                    num_write_req <= 0;
+                    num_write_rsp <= 0;
+                end
+                MAIN_FSM_READ_VERTEX: begin
+                    /* start dma when entering this state */
+                    if (vertex_dma_started) begin
+                        dma_start <= 0;
+                    end
+                    else begin
+                        dma_start <= 1;
+                        vertex_dma_started <= 1;
+                    end
+
+                    /* configure dma address */
+                    dma_src_addr <= csr_vertex_addr;
+                    dma_src_ncl <= csr_vertex_ncl;
+
+                    /* configure sssp */
+                    sssp_control <= 2'b01;
+                    sssp_word_in_addr <= (sssp_word_in_addr + dma_out_valid) << 3;
+                end
+                MAIN_FSM_PROCESS_EDGE: begin
+                    /* send out requests */
+                    sTx.c1.valid <= sssp_word_out_valid;
+                    sTx.c1.hdr.address <= csr_update_bin_addr + write_cls;
+                    sTx.c1.data <= sssp_word_out;
+                    write_cls <= write_cls + word_out_valid;
+                    num_write_req <= num_write_req + word_out_valid;
+
+                    /* start dma when entering this state */
+                    if (edge_dma_started) begin
+                        dma_start <= 0;
+                    end
+                    else begin
+                        dma_start <= 1;
+                        edge_dma_started <= 1;
+                    end
+
+                    /* configure dma address */
+                    dma_src_addr <= csr_edge_addr;
+                    dma_src_ncl <= csr_edge_ncl;
+
+                    /* configure sssp */
+                    sssp_control <= 2'b10;
+                    sssp_level <= csr_level;
+                end
+                MAIN_FSM_WRITE_RESULT: begin
+                    num_write_req <= num_write_req + 1;
+                    sTx.c1.valid <= 1;
+                    sTx.c1.hdr.address <= csr_status_addr;
+                    sTx.c1.data <= {256'h0, 32'h0, update_entry_count, 64'h1};
+                end
+                MAIN_FSM_FINISH: begin
+                    /* do nothing here */
+                end
+            endcase
+        end
+    end
+
+	/* handle write response */
 	always_ff @(posedge clk)
 	begin
-		if (reset)
-		begin
-			write_resp_cnt <= 32'h0;
+		if (reset) begin
+			num_write_rsp <= 32'h0;
+            responses_received <= 0;
 		end
-		else if (state == STATE_RUN && sRx.c1.rspValid == 1'b1)
-        begin
+		else if (sRx.c1.rspValid == 1'b1) begin
             if (sRx.c1.hdr.format == 1'b0)
-			    write_resp_cnt <= write_resp_cnt + 1;
-            else
-            begin
+			    num_write_rsp <= num_write_rsp + 1;
+            else begin
                 case (sRx.c1.hdr.cl_num)
-                    eCL_LEN_1: write_resp_cnt <= write_resp_cnt + 1;
-                    eCL_LEN_2: write_resp_cnt <= write_resp_cnt + 2;
-                    eCL_LEN_4: write_resp_cnt <= write_resp_cnt + 4;
+                    eCL_LEN_1: num_write_rsp <= num_write_rsp + 1;
+                    eCL_LEN_2: num_write_rsp <= num_write_rsp + 2;
+                    eCL_LEN_4: num_write_rsp <= num_write_rsp + 4;
                 endcase
             end
+
+            responses_received <= (num_write_req == num_write_rsp);
 		end
 	end
 endmodule

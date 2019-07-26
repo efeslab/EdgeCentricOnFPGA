@@ -12,7 +12,7 @@ module sssp_pipeline #(
     input logic word_in_valid,
     input logic [1:0] control,
     input logic [15:0] current_level,
-    input logic [1:0] control_out,
+    output logic [1:0] control_out,
     output logic last_input_out,
 	output logic [63:0] word_out,
     output logic valid_out,

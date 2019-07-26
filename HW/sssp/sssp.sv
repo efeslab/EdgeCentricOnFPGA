@@ -15,7 +15,7 @@ module sssp #(
     output logic done,
     output logic [31:0] update_entry_count,
     output logic [511:0] word_out,
-    output logic word_valid_out
+    output logic word_out_valid
 );
 
     logic [3:0] pipeline_last_input_out;
