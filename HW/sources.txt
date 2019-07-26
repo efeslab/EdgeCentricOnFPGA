@@ -15,6 +15,9 @@ cci/cci_mpf_app_conf_default.vh
 cci/ccip_std_afu.sv
 cci/csr_mgr.vh
 cci/vendor_defines.vh
+cci/sync_C1Tx_fifo.v
+cci/gram_sdp.v
+cci/a10_ram_sdp_wysiwyg.v
 
 sssp/app_afu.sv
 sssp/dma_read_engine.sv
