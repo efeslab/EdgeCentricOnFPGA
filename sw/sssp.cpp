@@ -1,884 +1,360 @@
-#include <aalsdk.h>      
+#include <inttypes.h>
+#include <getopt.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <errno.h>
 #include <string.h>
-#include <cassert>
-#include <time.h>
-#include <omp.h>
 
-#define  final_run 							1024
-#define  control_1							256
-#define  control_2							512
-#define  call_counter_mask					2097151
-#define  FPGA_no_of_writes_mask				524287
-#define 	FILE_NAME  								"syth-1-sssp.txt"
-#define 	V  		 								10000000
-#define 	E			  							80000000
-#define 	I			  							(64*1024)
-#define 	P			  							153
-#define 	P_run			  					153
+#define CL 64
 
-#define	CL_ID_MASK					1048575
-#define	MaxUpdateBufferSize			160000000
-#define 		ThreadNum						16
-#define		LocalUpdateBufferSize		1024
-#define		workload_of_FPGA		P  // fpga start work from
-#define		r_threshold					0.05  
-using namespace AAL;
+static int debug = 0;
 
-// Convenience macros for printing messages and errors.
-#ifdef MSG
-# undef MSG
-#endif // MSG
-#define MSG(x) std::cout << __AAL_SHORT_FILE__ << ':' << __LINE__ << ':' << __AAL_FUNC__ << "() : " << x << std::endl
-#ifdef ERR
-# undef ERR
-#endif // ERR
-# define ERR(x) std::cerr << __AAL_SHORT_FILE__ << ':' << __LINE__ << ':' << __AAL_FUNC__ << "() **Error : " << x << std::endl
+extern "C" {
+typedef struct {
+    uint32_t weight;
+    uint16_t level;
+    uint16_t winf:1;
+    uint16_t linf:1;
+    uint16_t rsvd:14;
+} vertex_t;
 
-// Print/don't print the event ID's entered in the event handlers.
-#if 1
-# define EVENT_CASE(x) case x : MSG(#x);
-#else
-# define EVENT_CASE(x) case x :
-#endif
-
-#ifndef CL
-# define CL(x)                     ((x) * 64)
-#endif // CL
-#ifndef LOG2_CL
-# define LOG2_CL                   6
-#endif // LOG2_CL
-#ifndef MB
-# define MB(x)                     ((x) * 1024 * 1024)
-#endif // MB
-
-#define LPBK1_DSM_SIZE           MB(4)
-
-/// @addtogroup SudokuSample
-/// @{
-
-inline uint32_t ln2(uint32_t x)
-{
-   uint32_t y = 1;
-   while ( x > 1 ) {
-      y++;
-      x = x >> 1;
-   }
-   return y;
+#define VERTEX_PER_CL (CL/sizeof(vertex_t))
+#define VERTEX(w,l,wi,li) (vertex_t) {  \
+    .weight = (w),                      \
+    .level = (l),                       \
+    .winf = (wi),                       \
+    .linf = (li),                       \
+    .rsvd = 0                           \
 }
-
-inline uint32_t isPow2(uint32_t x)
-{
-   uint32_t pow2 = (x & (x - 1));
-   return (pow2 == 0);
-}
-
-inline void find_min(uint32_t *board, int32_t *min_idx, int *min_pos)
-{
-   int32_t tmp, idx, i, j;
-   int32_t tmin_idx, tmin_pos;
-
-   tmin_idx = 0;
-   tmin_pos = INT_MAX;
-   for (idx = 0; idx < 81; idx++)
-      {
-      tmp = __builtin_popcount(board[idx]);
-      tmp = (tmp == 1) ? INT_MAX : tmp;
-      if ( tmp < tmin_pos )
-         {
-         tmin_pos = tmp;
-         tmin_idx = idx;
-      }
-   }
-   *min_idx = tmin_idx;
-   *min_pos = tmin_pos;
-}
-
+#define IS_ACTIVE(v,curr_lvl) \
+    ((v)->linf == 0 && (v)->level == (curr_lvl))
 
 typedef struct {
-	  unsigned char interval_id;
-	  unsigned int 	edge_start_cl;
-	  unsigned int 	edge_end_cl;
-	  unsigned int  edge_start_offset;
-	  unsigned int	edge_end_offset;
-	  unsigned int 	no_of_active_vertex;
-	  unsigned long * update_buffer;
-	  unsigned int  update_buffer_counter;
-} interval;
+    uint32_t src;
+    uint32_t dst;
+    uint32_t weight;
+    uint32_t rsvd;
+} edge_t;
 
-typedef struct {  
-	  unsigned int 	offset;
-	  unsigned int 	count;
-} vertex;
-
-
-class RuntimeClient : public CAASBase,
-                      public IRuntimeClient
-{
-public:
-   RuntimeClient();
-   ~RuntimeClient();
-
-   void end();
-
-   IRuntime* getRuntime();
-
-   btBool isOK();
-
-   // <begin IRuntimeClient interface>
-   void runtimeStarted(IRuntime            *pRuntime,
-                       const NamedValueSet &rConfigParms);
-
-   void runtimeStopped(IRuntime *pRuntime);
-
-   void runtimeStartFailed(const IEvent &rEvent);
-
-   void runtimeAllocateServiceFailed( IEvent const &rEvent);
-
-   void runtimeAllocateServiceSucceeded(IBase               *pClient,
-                                        TransactionID const &rTranID);
-
-   void runtimeEvent(const IEvent &rEvent);
-   
-
-   // <end IRuntimeClient interface>
-
-
-protected:
-   IRuntime        *m_pRuntime;  // Pointer to AAL runtime instance.
-   Runtime          m_Runtime;   // AAL Runtime
-   btBool           m_isOK;      // Status
-   CSemaphore       m_Sem;       // For synchronizing with the AAL runtime.
-};
-
-///////////////////////////////////////////////////////////////////////////////
-///
-///  MyRuntimeClient Implementation
-///
-///////////////////////////////////////////////////////////////////////////////
-RuntimeClient::RuntimeClient() :
-    m_Runtime(),        // Instantiate the AAL Runtime
-    m_pRuntime(NULL),
-    m_isOK(false)
-{
-   NamedValueSet configArgs;
-   NamedValueSet configRecord;
-
-   // Publish our interface
-   SetSubClassInterface(iidRuntimeClient, dynamic_cast<IRuntimeClient *>(this));
-
-   m_Sem.Create(0, 1);
-
-   // Using Hardware Services requires the Remote Resource Manager Broker Service
-   //  Note that this could also be accomplished by setting the environment variable
-   //   XLRUNTIME_CONFIG_BROKER_SERVICE to librrmbroker
-#if defined( HWAFU )
-   configRecord.Add(XLRUNTIME_CONFIG_BROKER_SERVICE, "librrmbroker");
-   configArgs.Add(XLRUNTIME_CONFIG_RECORD,configRecord);
-#endif
-
-   if(!m_Runtime.start(this, configArgs)){
-      m_isOK = false;
-      return;
-   }
-   m_Sem.Wait();
+#define EDGE_PER_CL (CL/sizeof(edge_t))
+#define EDGE(s,d,w) (edge_t) {  \
+    .src = (s),                 \
+    .dst = (d),                 \
+    .weight = (w),              \
+    .rsvd = 0                   \
 }
 
-RuntimeClient::~RuntimeClient()
+typedef struct {
+    uint32_t offset;
+    uint32_t count;
+} v2e_t;
+
+typedef struct {
+    uint32_t vertex;
+    uint32_t weight;
+} update_t;
+
+#define UPDATE(v,w) (update_t) {   \
+    .vertex = (v),      \
+    .weight = (w)       \
+}
+
+#define UPDATE_PER_CL (CL/sizeof(update_t))
+
+typedef struct {
+      uint32_t edge_start_offset;
+      uint32_t edge_start_cl;
+      uint32_t num_edges;
+      uint32_t num_cls;
+
+      update_t *update_bin;
+      uint32_t num_updates;
+      uint32_t num_active_vertices;
+} interval_t;
+
+#define VERTEX_PER_INTERVAL 256
+#define NUM_UPDATE_BIN_ENTRIES 4096
+#define VERTEX_TO_INTERVAL(x) ((x)/VERTEX_PER_INTERVAL)
+#define INTERVAL_TO_VERTEX(x) ((x)*VERTEX_PER_INTERVAL)
+
+typedef struct {
+    int num_v;
+    int num_e;
+    vertex_t *vertices;
+    edge_t *edges;
+    v2e_t *v2e;
+
+    int num_intervals;
+    interval_t *intervals;
+
+} graph_t;
+
+} /* C */
+
+graph_t *graph_init(int num_v, int num_e, char *filename)
 {
-    m_Sem.Destroy();
+    int i, j;
+    FILE *fp;
+    uint32_t s, d;
+    int num_intervals;
+
+    if ((fp = fopen(filename, "r")) == NULL) {
+        fprintf(stderr, "Cannot open file. Check the name.\n");
+        return NULL;
+    }
+
+    graph_t *g = (graph_t *) malloc(sizeof(graph_t));
+    g->num_v = num_v;
+    g->num_e = num_e;
+    g->vertices = (vertex_t *) malloc(sizeof(vertex_t) * num_v);
+    g->edges = (edge_t *) malloc(sizeof(edge_t) * num_e);
+    g->v2e = (v2e_t *) malloc(sizeof(v2e_t) * num_v);
+
+    for (i = 0; i < num_v; i++) {
+        g->vertices[i] = VERTEX(0, 0, 1, 1);
+    }
+
+    memset(g->edges, 0x0, num_e*sizeof(edge_t));
+    memset(g->v2e, 0x0, num_v*sizeof(v2e_t));
+
+    if (fscanf(fp, "%u %u\n", &s, &d) != EOF) {
+        if (s >= num_v || d >= num_v) {
+            goto error;
+        }
+
+        g->edges[0] = EDGE(s, d, (uint32_t)rand()%64);
+        g->v2e[s].offset = 0;
+        g->v2e[s].count++;
+    }
+        
+    for (i = 1; i < num_e; i++) {
+        if (fscanf(fp, "%u %u\n", &s, &d) != EOF) {
+            g->edges[i] = EDGE(s, d, (uint32_t)rand()%64);
+            g->v2e[s].count++;
+
+            if (s != g->edges[i-1].src) {
+                g->v2e[s].offset = i;
+                if (s > g->edges[i-1].src + 1) {
+                    for (j = g->edges[i-1].src + 1; j < s; j++) {
+                        g->v2e[j].offset = i;
+                    }
+                }
+            }
+        }
+    }
+
+    fclose(fp);
+
+    num_intervals = (num_v - 1) / VERTEX_PER_INTERVAL + 1;
+    g->intervals = (interval_t *)malloc(sizeof(interval_t)*num_intervals);
+    g->num_intervals = num_intervals;
+
+    for (i = 0; i < num_intervals; i++) {
+        int off = i * VERTEX_PER_INTERVAL;
+
+        int start_off, end_off, ne;
+        uint64_t start_cl, end_cl, ncl;
+        if (i != num_intervals - 1) {
+            start_off = g->v2e[i * VERTEX_PER_INTERVAL].offset;
+            end_off = g->v2e[(i + 1) * VERTEX_PER_INTERVAL].offset;
+            ne = end_off - start_off;
+        }
+        else {
+            start_off = g->v2e[i * VERTEX_PER_INTERVAL].offset;
+            end_off = g->num_e;
+            ne = end_off - start_off;
+        }
+
+        start_cl = ((uint64_t) &g->edges[start_off]) / CL;
+        end_cl = ((uint64_t) &g->edges[end_off]) / CL;
+
+        if ((uint64_t) &g->edges[end_off] % CL != 0) {
+            end_cl += 1;
+        }
+
+        ncl = end_cl - start_cl;
+
+        g->intervals[i].edge_start_offset = start_off;
+        g->intervals[i].edge_start_cl = start_cl;
+        g->intervals[i].num_edges = ne;
+        g->intervals[i].num_cls = ncl;
+
+        g->intervals[i].update_bin = (update_t *)malloc(sizeof(update_t) * NUM_UPDATE_BIN_ENTRIES);
+        g->intervals[i].num_updates = 0;
+        g->intervals[i].num_active_vertices = 0;
+    }
+
+    return g;
+
+error:
+    free(g->vertices);
+    free(g->edges);
+    free(g->v2e);
+    free(g);
+    return NULL;
 }
 
-btBool RuntimeClient::isOK()
+int sssp_sw(graph_t *g, int root)
 {
-   return m_isOK;
+    int have_update;
+    int current_level;
+    int i, j, k;
+
+    if (root >= g->num_v) {
+        return -EFAULT;
+    }
+    g->vertices[root].winf = 0;
+    g->vertices[root].linf = 0;
+    g->vertices[root].level = 0;
+    g->intervals[VERTEX_TO_INTERVAL(root)].num_active_vertices = 1;
+    have_update = 1;
+    current_level = 0;
+
+    while (have_update) {
+        have_update = 0;
+        int active_cnt = 0;
+
+        if (debug) {
+            printf("\n------------ level %d -------------\n", current_level);
+        }
+
+        /* scatter */
+        for (i = 0; i < g->num_intervals; i++) {
+            interval_t *curr = &g->intervals[i];
+            if (curr->num_active_vertices == 0) {
+                continue;
+            }
+
+            /* we need to set num_active_vertices to 0 */
+            curr->num_active_vertices = 0;
+            
+            int update_cnt = 0;
+            int start_vidx = INTERVAL_TO_VERTEX(i);
+            int end_vidx = start_vidx + VERTEX_PER_INTERVAL;
+            for (j = 0; j < curr->num_edges; j++) {
+                edge_t *e = &g->edges[curr->edge_start_offset + j];
+                vertex_t *src_v = &g->vertices[e->src];
+                if (e->src >= start_vidx && e->src < end_vidx /* inside interval */
+                        && IS_ACTIVE(src_v, current_level)) { /* src is active */
+                    curr->update_bin[update_cnt] = UPDATE(e->dst, src_v->weight + e->weight);
+                    update_cnt++;
+                }
+            }
+            curr->num_updates = update_cnt;
+
+            if (debug) {
+                printf("interval %d: %d updates\n", i, update_cnt);
+            }
+        }
+
+        /* gather */
+        for (i = 0; i < g->num_intervals; i++) {
+            interval_t *curr = &g->intervals[i];
+            if (curr->num_updates == 0) {
+                continue;
+            }
+
+            for (j = 0; j < curr->num_updates; j++) {
+                update_t *update = &curr->update_bin[j];
+                vertex_t *update_vertex = &g->vertices[update->vertex];
+                int vertex_interval = VERTEX_TO_INTERVAL(update->vertex);
+
+                /* do the update */
+                if (update_vertex->winf == 1 /* the value of the vertex is inf */
+                        || update_vertex->weight > update->weight) {
+                    if (debug) {
+                        printf("interval %d: update interval %d vertex %d, %d -> %d\n",
+                                j, vertex_interval, update->vertex,
+                                update_vertex->winf?-1:update_vertex->weight,
+                                update->weight);
+                    }
+                    update_vertex->weight = update->weight;
+                    update_vertex->level = current_level + 1;
+                    update_vertex->winf = 0;
+                    update_vertex->linf = 0;
+                    g->intervals[vertex_interval].num_active_vertices++;
+                    active_cnt++;
+                }
+            }
+
+            curr->num_updates = 0;
+        }
+
+        for (i = 0; i < g->num_intervals; i++) {
+            if (g->intervals[i].num_active_vertices != 0) {
+                have_update = 1;
+                break;
+            }
+        }
+
+        printf("level %d: update %d vertices\n", current_level, active_cnt);
+        fflush(stdout);
+
+        current_level++;
+    }
+
+    return 0;
 }
-
-void RuntimeClient::runtimeStarted(IRuntime *pRuntime,
-                                   const NamedValueSet &rConfigParms)
-{
-   // Save a copy of our runtime interface instance.
-   m_pRuntime = pRuntime;
-   m_isOK = true;
-   m_Sem.Post(1);
-}
-
-void RuntimeClient::end()
-{
-   m_Runtime.stop();
-   m_Sem.Wait();
-}
-
-void RuntimeClient::runtimeStopped(IRuntime *pRuntime)
-{
-   MSG("Runtime stopped");
-   m_isOK = false;
-   m_Sem.Post(1);
-}
-
-void RuntimeClient::runtimeStartFailed(const IEvent &rEvent)
-{
-   IExceptionTransactionEvent * pExEvent = dynamic_ptr<IExceptionTransactionEvent>(iidExTranEvent, rEvent);
-   ERR("Runtime start failed");
-   ERR(pExEvent->Description());
-}
-
-void RuntimeClient::runtimeAllocateServiceFailed(IEvent const &rEvent)
-{
-   IExceptionTransactionEvent * pExEvent = dynamic_ptr<IExceptionTransactionEvent>(iidExTranEvent, rEvent);
-   ERR("Runtime AllocateService failed");
-   ERR(pExEvent->Description());
-}
-
-void RuntimeClient::runtimeAllocateServiceSucceeded(IBase *pClient,
-                                                    TransactionID const &rTranID)
-{
-   MSG("Runtime Allocate Service Succeeded");
-}
-
-void RuntimeClient::runtimeEvent(const IEvent &rEvent)
-{
-   MSG("Generic message handler (runtime)");
-}
-
-IRuntime * RuntimeClient::getRuntime()
-{
-   return m_pRuntime;
-}
-
-
-/// @brief   Define our Service client class so that we can receive Service-related notifications from the AAL Runtime.
-///          The Service Client contains the application logic.
-///
-/// When we request an AFU (Service) from AAL, the request will be fulfilled by calling into this interface.
-class SSSP: public CAASBase, public IServiceClient, public ISPLClient
-{
-public:
-
-   SSSP(RuntimeClient * rtc, char *puzName);
-   ~SSSP();
-
-   btInt run();
-
-   // <ISPLClient>
-   virtual void OnTransactionStarted(TransactionID const &TranID,
-                                     btVirtAddr AFUDSM,
-                                     btWSSize AFUDSMSize);
-   virtual void OnContextWorkspaceSet(TransactionID const &TranID);
-
-   virtual void OnTransactionFailed(const IEvent &Event);
-
-   virtual void OnTransactionComplete(TransactionID const &TranID);
-
-   virtual void OnTransactionStopped(TransactionID const &TranID);
-   virtual void OnWorkspaceAllocated(TransactionID const &TranID,
-                                     btVirtAddr WkspcVirt,
-                                     btPhysAddr WkspcPhys,
-                                     btWSSize WkspcSize);
-
-   virtual void OnWorkspaceAllocateFailed(const IEvent &Event);
-
-   virtual void OnWorkspaceFreed(TransactionID const &TranID);
-
-   virtual void OnWorkspaceFreeFailed(const IEvent &Event);
-   // </ISPLClient>
-
-   // <begin IServiceClient interface>
-   virtual void serviceAllocated(IBase *pServiceBase,
-                                 TransactionID const &rTranID);
-
-   virtual void serviceAllocateFailed(const IEvent &rEvent);
-
-   virtual void serviceFreed(TransactionID const &rTranID);
-
-   virtual void serviceEvent(const IEvent &rEvent);
-   // <end IServiceClient interface>
-
-   /* SW implementation of a SSSP solver */
-   static void print_board(uint32_t *board);
-   static int32_t sudoku_norec(uint32_t *board, uint32_t *os);
-   static int32_t check_correct(uint32_t *board, uint32_t *unsolved_pieces);
-   static int32_t solve(uint32_t *board, uint32_t *os);
-   protected:
-
-   char          *m_puzName;
-   IBase         *m_pAALService;    // The generic AAL Service interface for the AFU.
-   RuntimeClient *m_runtimClient;
-   ISPLAFU       *m_SPLService;
-   CSemaphore     m_Sem;            // For synchronizing with the AAL runtime.
-   btInt          m_Result;
-
-   // Workspace info
-   btVirtAddr     m_pWkspcVirt;     ///< Workspace virtual address.
-   btWSSize       m_WkspcSize;      ///< DSM workspace size in bytes.
-
-   btVirtAddr     m_AFUDSMVirt;     ///< Points to DSM
-   btWSSize       m_AFUDSMSize;     ///< Length in bytes of DSM
-};
-
-
-
-
-/* DBS: for SSSP */
-
-
-void SSSP::print_board(uint32_t *board)
-{   
-   printf("\n");
-}
-
-int32_t SSSP::check_correct(uint32_t *board, uint32_t *unsolved_pieces)
-{   
-   return 0;
-}
-
-inline uint32_t one_set(uint32_t x)
-{
-   /* all ones if pow2, otherwise 0 */
-   uint32_t pow2 = (x & (x - 1));
-   uint32_t m = (pow2 == 0);
-   return ((~m) + 1) & x;
-}
-
-int32_t SSSP::solve(uint32_t *board, uint32_t *os)
-{return 0;}
-
-int32_t SSSP::sudoku_norec(uint32_t *board, uint32_t *os)
-{return 1;}
-
-
-///////////////////////////////////////////////////////////////////////////////
-///
-///  Implementation
-///
-///////////////////////////////////////////////////////////////////////////////
-SSSP::SSSP(RuntimeClient *rtc, char *puzName) :
-   m_puzName(puzName),
-   m_pAALService(NULL),
-   m_runtimClient(rtc),
-   m_SPLService(NULL),
-   m_Result(0),
-   m_pWkspcVirt(NULL),
-   m_WkspcSize(0),
-   m_AFUDSMVirt(NULL),
-   m_AFUDSMSize(0)
-{
-   SetSubClassInterface(iidServiceClient, dynamic_cast<IServiceClient *>(this));
-   SetInterface(iidSPLClient, dynamic_cast<ISPLClient *>(this));
-   SetInterface(iidCCIClient, dynamic_cast<ICCIClient *>(this));
-   m_Sem.Create(0, 1);
-}
-
-SSSP::~SSSP()
-{m_Sem.Destroy();}
-
-btInt SSSP::run()
-{
-   cout <<"======================="<<endl;
-   cout <<"= Hello SPL LB Sample ="<<endl;
-   cout <<"======================="<<endl;
-
-   // Request our AFU.
-
-   // NOTE: This example is bypassing the Resource Manager's configuration record lookup
-   //  mechanism.  This code is work around code and subject to change.
-   NamedValueSet Manifest;
-   NamedValueSet ConfigRecord;
-
-
-#if defined( HWAFU )                /* Use FPGA hardware */
-   ConfigRecord.Add(AAL_FACTORY_CREATE_CONFIGRECORD_FULL_SERVICE_NAME, "libHWSPLAFU");
-   ConfigRecord.Add(keyRegAFU_ID,"5DA62813-9A75-4228-8FDB-5D4006DD55CE");
-   ConfigRecord.Add(AAL_FACTORY_CREATE_CONFIGRECORD_FULL_AIA_NAME, "libAASUAIA");
-
-   #elif defined ( ASEAFU )
-   ConfigRecord.Add(AAL_FACTORY_CREATE_CONFIGRECORD_FULL_SERVICE_NAME, "libASESPLAFU");
-   ConfigRecord.Add(AAL_FACTORY_CREATE_SOFTWARE_SERVICE,true);
-
-#else
-
-   ConfigRecord.Add(AAL_FACTORY_CREATE_CONFIGRECORD_FULL_SERVICE_NAME, "libSWSimSPLAFU");
-   ConfigRecord.Add(AAL_FACTORY_CREATE_SOFTWARE_SERVICE,true);
-#endif
-
-   Manifest.Add(AAL_FACTORY_CREATE_CONFIGRECORD_INCLUDED, ConfigRecord);
-
-   Manifest.Add(AAL_FACTORY_CREATE_SERVICENAME, "Hello SPL LB");
-
-   MSG("Allocating Service");
-
-   // Allocate the Service and allocate the required workspace.
-   //   This happens in the background via callbacks (simple state machine).
-   //   When everything is set we do the real work here in the main thread.
-   m_runtimClient->getRuntime()->allocService(dynamic_cast<IBase *>(this), Manifest);
-
-   m_Sem.Wait();
-
-   // If all went well run test.
-   //   NOTE: If not successful we simply bail.
-   //         A better design would do all appropriate clean-up.
-
-
-  int i, j, k, o, p, q;
-      //=============================
-      // Now we have the NLB Service
-      //   now we can use it
-      //=============================
-      MSG("Running Test");
-
-      btVirtAddr         pWSUsrVirt = m_pWkspcVirt; // Address of Workspace
-      const btWSSize     WSLen      = m_WkspcSize; // Length of workspace in bytes
-
-      INFO("Allocated " << WSLen << "-byte Workspace at virtual address "
-                        << std::hex << (void *)pWSUsrVirt);
-
-      // Number of bytes in each of the source and destination buffers (4 MiB in this case)
-      btUnsigned32bitInt a_num_bytes= (btUnsigned32bitInt) ((WSLen - sizeof(VAFU2_CNTXT)) / 2);
-      btUnsigned32bitInt a_num_cl   = a_num_bytes / CL(1);  // number of cache lines in buffer
-
-      // VAFU Context is at the beginning of the buffer
-      VAFU2_CNTXT       *pVAFU2_cntxt = reinterpret_cast<VAFU2_CNTXT *>(pWSUsrVirt);
-
-      btVirtAddr         pSource_V = pWSUsrVirt + sizeof(VAFU2_CNTXT);
-
-	  btVirtAddr         pSource_E = pSource_V + 626688*CL(1);
-			
-      btVirtAddr         pDest     = pSource_E + 10000100*CL(1);
-
-      
-      omp_set_nested(1); 
-      
-      int						*LocalUpdateBufferCounter[ThreadNum];
-	  long 						**UpdateBufferCache[ThreadNum];
-	  	
-	  for(i=0; i<ThreadNum; i++){
-			LocalUpdateBufferCounter[i] = (int*) malloc(sizeof(int)*P);	
-			UpdateBufferCache[i] = (long**) malloc(sizeof(long*)*P);
-			for(j=0;	j<P; j++){
-				LocalUpdateBufferCounter[i][j]=0;
-				UpdateBufferCache[i][j] = (long*) malloc(sizeof(long)*LocalUpdateBufferSize);	
-			}
-		}
-		
-      bt32bitInt delay(0.001);   
-      	
-	  int root = 0;
-	  int current_level =0;	
-	  int call_counter = 15;
-	  int interval_id;
-	  int FrontierSize = 0;
-	  int FPGA_no_of_writes;
-	  int counter=0;
-	  int have_update=1;
-	  volatile bt32bitInt done = 0;
-	  
-	  //------------------------------------------------------------------
-	  // read files and initialization
-	  interval* 		Intervals 	= (interval*) malloc(sizeof(interval)*P);		
-	  vertex* 			vertex_set 	= (vertex*) malloc(sizeof(vertex)*I*P);   // this set is only used by cpu
-	  
-	  for(i=0; i<P*I; i++){
-		vertex_set[i].offset = 0;
-		vertex_set[i].count = 0;
-	  }
-	  
-	  ::memset( pSource_V, 		0xff,  	626688*CL(1) );
-      ::memset( pDest,   		0x00, 		6000000*CL(1) );      	         
-      
-	  
-	  for(i=0; i<626688; i++){	  		 		 		
-		*((unsigned int*)(pSource_V)+15+16*i) = (*((unsigned int*)(pSource_V)+15+16*i) & CL_ID_MASK) + ((i&4095)<<20);
-	  } 
-	  
-	  *((unsigned int*)(pSource_V)+root) = 0<<8 + current_level;
-	  
-	  
-	  	FILE *fp;  
-	  	unsigned long u1, u2, u3;
-		counter=0;
-		
-		if ((fp=fopen(FILE_NAME,"r"))==NULL) printf("Cannot open file. Check the name.\n"); 
-		else {
-			if(fscanf(fp,"%lu %lu %lu\n",&u1, &u2, &u3)!=EOF){				
-					*((unsigned long*)(pSource_E)+0) = (u1<<40)+(u2<<16)+u3;	
-					vertex_set[u1].offset = 0;				
-			}
-			for(i=1; i<E; i++){
-				if(fscanf(fp,"%lu %lu %lu\n",&u1, &u2, &u3)!=EOF){										
-					*((unsigned long*)(pSource_E)+i) = (u1<<40)+(u2<<16)+u3;					
-					if(u1 != (*((unsigned long*)(pSource_E)+i-1)>>40)){
-						vertex_set[u1].offset = i;	
-						vertex_set[(*((unsigned long*)(pSource_E)+i-1)>>40)].count=counter+1;												
-						counter=0;
-					} else{
-						counter++;
-					}
-					//if(u1==8781682)
-					//	cout<<i<<" "<<u1<<" "<<u2<<" "<<u3<<endl	;					
-				}
-			}
-			fclose(fp);
-		}
-
-		for(i=0; i<P; i++){			
-			for(j=I*i; j<(i+1)*I-1; j++){
-				if(vertex_set[j].count !=0) {
-					Intervals[i].edge_end_offset = vertex_set[j].offset+vertex_set[j].count;
-					Intervals[i].edge_end_cl = Intervals[i].edge_end_offset/8;		
-				}		
-			}	
-			for(j=(i+1)*I-1; j>i*I; j--){			
-				if(vertex_set[j].count !=0) {
-					Intervals[i].edge_start_offset = vertex_set[j].offset;
-					Intervals[i].edge_start_cl = Intervals[i].edge_start_offset/8;	
-				}		
-			}	
-			Intervals[i].interval_id = i;
-			Intervals[i].no_of_active_vertex = 0;
-			Intervals[i].update_buffer_counter = 0;
-			Intervals[i].update_buffer = (unsigned long *) malloc(sizeof(unsigned long)*MaxUpdateBufferSize);
-			for(j=0; j<MaxUpdateBufferSize; j++)
-				Intervals[i].update_buffer[j] = 0;
-		}		
-		
-		Intervals[0].no_of_active_vertex=1;
-		Intervals[0].edge_start_cl = 0;
-		Intervals[0].edge_start_offset =0;
-		//for(i=0; i<P; i++){cout<<Intervals[i].edge_start_cl << " "<<Intervals[i].edge_end_cl<<" "<<Intervals[i].edge_start_offset<<" "<<Intervals[i].edge_end_offset<<endl;}
-	
-		//------------------------------------------------------------------
-		
-		::memset(pVAFU2_cntxt, 0, sizeof(VAFU2_CNTXT));
-		pVAFU2_cntxt->dword0  = ((call_counter-1)<<11);	  		  	 
-		struct timespec start, stop; 
-		double exe_time;	  
-		double total_time = 0;
-		int thread_id;
-		int edge_centric_no = 0;
-		m_SPLService->StartTransactionContext(TransactionID(), pWSUsrVirt, 100);
-		m_Sem.Wait();
-		int CPU_done = P-1;
-	  	int FPGA_done = 0;
-	  	
-		
-		while(have_update){
-			have_update = 0;
-	 		if( clock_gettime(CLOCK_REALTIME, &start) == -1) { perror("clock gettime");}
-			CPU_done = P-1;
-			FPGA_done = 0;
-			
-			if(current_level==11){
-				for(p=0; p<CPU_done; p++){ 
-					if(Intervals[p].no_of_active_vertex>0) {
-						//Intervals[p].no_of_active_vertex=0;
-						pVAFU2_cntxt->num_cl  = 4096;
-						pVAFU2_cntxt->pSource = pSource_V+p*4096*64;
-						pVAFU2_cntxt->dword0  = (call_counter<<11)+control_1+current_level;
-						done = ((pVAFU2_cntxt->Status)>>1)  & call_counter_mask;
-						while ((done !=call_counter)) {
-							SleepMilli( delay );
-							done = ((pVAFU2_cntxt->Status)>>1)  & call_counter_mask;
-						}    
-						call_counter++;           
-		
-						// read edges	  				  			      
-						pVAFU2_cntxt->pDest   = pDest;
-						pVAFU2_cntxt->pSource = pSource_E+Intervals[p].edge_start_cl*64;				   
-						pVAFU2_cntxt->num_cl  = Intervals[p].edge_end_cl-Intervals[p].edge_start_cl;
-						pVAFU2_cntxt->dword0  = (call_counter<<11)+control_2+current_level;
-						while ((done!=call_counter) && (CPU_done>FPGA_done)) {
-							SleepMilli( delay );											
-							if((Intervals[CPU_done].no_of_active_vertex>0) ){
-								#pragma omp parallel num_threads(ThreadNum) shared(vertex_set, pSource_V, pSource_E, Intervals, CPU_done) private(i, j, k, interval_id, thread_id)
-								{
-									thread_id = omp_get_thread_num();					
-									#pragma omp for schedule(static) 					
-									for(k=Intervals[CPU_done].edge_start_offset; k<Intervals[CPU_done].edge_end_offset; k++){
-										if((*((unsigned int*)(pSource_V)+((*((unsigned long*)(pSource_E)+k)>>40)&16777215))&255)==current_level){											
-											interval_id=((*((unsigned long*)(pSource_E)+k)>>16)&16777215)/I;	
-											UpdateBufferCache[thread_id][interval_id][LocalUpdateBufferCounter[thread_id][interval_id]] = (((*((unsigned long*)(pSource_E)+k)>>16)&16777215)<<32)+(*((unsigned long*)(pSource_E)+k)&65535)+((*((unsigned int*)(pSource_V)+((*((unsigned long*)(pSource_E)+k)>>40)&16777215))>>8)&16777215);
-											LocalUpdateBufferCounter[thread_id][interval_id]++;								
-											if(LocalUpdateBufferCounter[thread_id][interval_id] == LocalUpdateBufferSize){															
-												#pragma omp critical 
-												{
-													for(j=Intervals[interval_id].update_buffer_counter; j<Intervals[interval_id].update_buffer_counter+LocalUpdateBufferSize; j++){											
-														 Intervals[interval_id]. update_buffer[j]	 = UpdateBufferCache[thread_id][interval_id][j-Intervals[interval_id].update_buffer_counter];
-													}																					
-													Intervals[interval_id].update_buffer_counter+=LocalUpdateBufferSize;
-												}
-												LocalUpdateBufferCounter[thread_id][interval_id]=0;														
-											}	
-										}	
-									}												
-								}
-								//cout<<"cpu done"<<CPU_done<<endl;	
-							}										
-							CPU_done--;		
-							done = ((pVAFU2_cntxt->Status)>>1)  & call_counter_mask;
-						} 
-													
-						FPGA_no_of_writes = ((pVAFU2_cntxt->Status)>>22)  & FPGA_no_of_writes_mask;  								
-						//cout<<FPGA_no_of_writes<<endl;
-						call_counter++;		
-						if(FPGA_no_of_writes !=0){
-							for(q=0; q<8*FPGA_no_of_writes; q++){	
-								interval_id =  (*((unsigned long*)(pDest)+q)>>32)/I ;
-								Intervals[interval_id].update_buffer[Intervals[interval_id].update_buffer_counter] = *((unsigned long*)(pDest)+q);
-								Intervals[interval_id].update_buffer_counter++;	
-							}	
-						}
-						
-					}
-					FPGA_done++;
-				}	
-			}	
-			if( clock_gettime(CLOCK_REALTIME, &stop) == -1) { perror("clock gettime");}
-				
-			//------------scatter again to make sure no updates is lost------------
-			/*
-			for(p=0; p<P_run; p++){
-				if(Intervals[p].no_of_active_vertex>0) {
-					Intervals[p].no_of_active_vertex=0;
-					#pragma omp parallel num_threads(ThreadNum) shared(vertex_set, pSource_V, pSource_E, Intervals, p) private(i, j, k, interval_id, thread_id)
-					{
-						thread_id = omp_get_thread_num();					
-						#pragma omp for schedule(static) 					
-						for(k=Intervals[p].edge_start_offset; k<Intervals[p].edge_end_offset; k++){
-							if((*((unsigned int*)(pSource_V)+((*((unsigned long*)(pSource_E)+k)>>40)&16777215))&255)==current_level){											
-								interval_id=((*((unsigned long*)(pSource_E)+k)>>16)&16777215)/I;	
-								UpdateBufferCache[thread_id][interval_id][LocalUpdateBufferCounter[thread_id][interval_id]] = (((*((unsigned long*)(pSource_E)+k)>>16)&16777215)<<32)+(*((unsigned long*)(pSource_E)+k)&65535)+((*((unsigned int*)(pSource_V)+((*((unsigned long*)(pSource_E)+k)>>40)&16777215))>>8)&16777215);
-								LocalUpdateBufferCounter[thread_id][interval_id]++;								
-								if(LocalUpdateBufferCounter[thread_id][interval_id] == LocalUpdateBufferSize){															
-									#pragma omp critical 
-									{
-										for(j=Intervals[interval_id].update_buffer_counter; j<Intervals[interval_id].update_buffer_counter+LocalUpdateBufferSize; j++){											
-											 Intervals[interval_id]. update_buffer[j]	 = UpdateBufferCache[thread_id][interval_id][j-Intervals[interval_id].update_buffer_counter];
-										}																					
-										Intervals[interval_id].update_buffer_counter+=LocalUpdateBufferSize;
-									}
-									LocalUpdateBufferCounter[thread_id][interval_id]=0;														
-								}	
-							}	
-						}												
-					}
-				}
-				Intervals[p].no_of_active_vertex = 0;
-			}*/		
-			// Serial flush	buffer cache					
-			
-			for(thread_id=0; thread_id<ThreadNum; thread_id++){
-				for(interval_id=0;	interval_id<P; interval_id++){			
-					if(LocalUpdateBufferCounter[thread_id][interval_id]!=0 && LocalUpdateBufferCounter[thread_id][interval_id]<LocalUpdateBufferSize){											
-						for(i=Intervals[interval_id].update_buffer_counter; i<Intervals[interval_id].update_buffer_counter+LocalUpdateBufferCounter[thread_id][interval_id]; i++){
-						 	Intervals[interval_id].update_buffer[i] = 	UpdateBufferCache[thread_id][interval_id][i-Intervals[interval_id].update_buffer_counter];
-						}
-						Intervals[interval_id].update_buffer_counter+= LocalUpdateBufferCounter[thread_id][interval_id];
-					}											
-					LocalUpdateBufferCounter[thread_id][interval_id]=0;
-				}
-			}
-			
-			
-			//------------------------gather------------------
-			#pragma omp parallel for shared(Intervals, pSource_V) private(p,j) schedule(dynamic) reduction(+:FrontierSize)
-			
-			 for(p=0; p<P_run; p++){					
-				if(Intervals[p].update_buffer_counter!=0){										
-					for(j=0; j<Intervals[p].update_buffer_counter; j++){
-						if(((Intervals[p].update_buffer[j]>>32)%16) <15) {						    
-							if((*((unsigned int*)(pSource_V)+(Intervals[p].update_buffer[j]>>32))>>8) >(Intervals[p].update_buffer[j] & 1677721																															
-							   int temp = (*((unsigned int*)(pSource_V)+(Intervals[p].update_buffer[j]>>32))>>8);
-							   *((unsigned int*)(pSource_V)+(Intervals[p].update_buffer[j]>>32)) = ((Intervals[p].update_buffer[j] & 16777215)<<8) + current_level+1;														    
-								Intervals[p].no_of_active_vertex ++;
-								FrontierSize++;									
-							}								    						    
-						}															
-					}					
-				}				
-				Intervals[p].update_buffer_counter=0;					
-			}		
-			current_level++;
-			
-			
-			exe_time = (stop.tv_sec - start.tv_sec)+ (double)(stop.tv_nsec - start.tv_nsec)/1e9;							
-			total_time = total_time+exe_time;
-			have_update = FrontierSize; 
-			FrontierSize=0;												
-		}
-		printf("exe time is %f sec\n", total_time);
-		pVAFU2_cntxt->num_cl  = 1;
-		pVAFU2_cntxt->dword0  = (call_counter<<11)+final_run;
-		INFO("Workspace verification complete, freeing workspace.");
-		m_SPLService->WorkspaceFree(m_pWkspcVirt, TransactionID());
-		m_Sem.Wait();
-
-		m_runtimClient->end();   
-   
-		return m_Result;
-}
-
-// We must implement the IServiceClient interface (IServiceClient.h):
-
-// <begin IServiceClient interface>
-void SSSP::serviceAllocated(IBase               *pServiceBase,
-                              TransactionID const &rTranID)
-{
-   m_pAALService = pServiceBase;
-   ASSERT(NULL != m_pAALService);
-
-   // Documentation says SPLAFU Service publishes ISPLAFU as subclass interface
-   m_SPLService = subclass_ptr<ISPLAFU>(pServiceBase);
-
-   ASSERT(NULL != m_SPLService);
-   if ( NULL == m_SPLService ) {
-      return;
-   }
-
-   MSG("Service Allocated");
-
-   // Allocate Workspaces needed. ASE runs more slowly and we want to watch the transfers,
-   //   so have fewer of them.
-#if defined ( ASEAFU )
-#define LB_BUFFER_SIZE CL(16500000)
-#else
-#define LB_BUFFER_SIZE CL(16500000)
-#endif
-
-   m_SPLService->WorkspaceAllocate(sizeof(VAFU2_CNTXT) + LB_BUFFER_SIZE + LB_BUFFER_SIZE,
-      TransactionID());
-
-}
-
-void SSSP::serviceAllocateFailed(const IEvent &rEvent)
-{
-   IExceptionTransactionEvent * pExEvent = dynamic_ptr<IExceptionTransactionEvent>(iidExTranEvent, rEvent);
-   ERR("Failed to allocate a Service");
-   ERR(pExEvent->Description());
-   ++m_Result;
-   m_Sem.Post(1);
-}
-
-void SSSP::serviceFreed(TransactionID const &rTranID)
-{
-   MSG("Service Freed");
-   // Unblock Main()
-   m_Sem.Post(1);
-}
-
-// <ISPLClient>
-void SSSP::OnWorkspaceAllocated(TransactionID const &TranID,
-                                  btVirtAddr           WkspcVirt,
-                                  btPhysAddr           WkspcPhys,
-                                  btWSSize             WkspcSize)
-{
-   AutoLock(this);
-
-   m_pWkspcVirt = WkspcVirt;
-   m_WkspcSize = WkspcSize;
-	//m_WkspcSize = 160*CL(1);
-	
-   INFO("Got Workspace");         // Got workspace so unblock the Run() thread
-   m_Sem.Post(1);
-}
-
-void SSSP::OnWorkspaceAllocateFailed(const IEvent &rEvent)
-{
-   IExceptionTransactionEvent * pExEvent = dynamic_ptr<IExceptionTransactionEvent>(iidExTranEvent, rEvent);
-   ERR("OnWorkspaceAllocateFailed");
-   ERR(pExEvent->Description());
-   ++m_Result;
-   m_Sem.Post(1);
-}
-
-void SSSP::OnWorkspaceFreed(TransactionID const &TranID)
-{
-   ERR("OnWorkspaceFreed");
-   // Freed so now Release() the Service through the Services IAALService::Release() method
-   (dynamic_ptr<IAALService>(iidService, m_pAALService))->Release(TransactionID());
-}
-
-void SSSP::OnWorkspaceFreeFailed(const IEvent &rEvent)
-{
-   IExceptionTransactionEvent * pExEvent = dynamic_ptr<IExceptionTransactionEvent>(iidExTranEvent, rEvent);
-   ERR("OnWorkspaceAllocateFailed");
-   ERR(pExEvent->Description());
-   ++m_Result;
-   m_Sem.Post(1);
-}
-
-/// CMyApp Client implementation of ISPLClient::OnTransactionStarted
-void SSSP::OnTransactionStarted( TransactionID const &TranID,
-                                   btVirtAddr           AFUDSMVirt,
-                                   btWSSize             AFUDSMSize)
-{
-   INFO("Transaction Started");
-   m_AFUDSMVirt = AFUDSMVirt;
-   m_AFUDSMSize =  AFUDSMSize;
-   m_Sem.Post(1);
-}
-/// CMyApp Client implementation of ISPLClient::OnContextWorkspaceSet
-void SSSP::OnContextWorkspaceSet( TransactionID const &TranID)
-{
-   INFO("Context Set");
-   m_Sem.Post(1);
-}
-/// CMyApp Client implementation of ISPLClient::OnTransactionFailed
-void SSSP::OnTransactionFailed( const IEvent &rEvent)
-{
-   IExceptionTransactionEvent * pExEvent = dynamic_ptr<IExceptionTransactionEvent>(iidExTranEvent, rEvent);
-   MSG("Runtime AllocateService failed");
-   MSG(pExEvent->Description());
-   m_bIsOK = false;
-   ++m_Result;
-   m_AFUDSMVirt = NULL;
-   m_AFUDSMSize =  0;
-   ERR("Transaction Failed");
-   m_Sem.Post(1);
-}
-/// CMyApp Client implementation of ISPLClient::OnTransactionComplete
-void SSSP::OnTransactionComplete( TransactionID const &TranID)
-{
-   m_AFUDSMVirt = NULL;
-   m_AFUDSMSize =  0;
-   INFO("Transaction Complete");
-   m_Sem.Post(1);
-}
-/// CMyApp Client implementation of ISPLClient::OnTransactionStopped
-void SSSP::OnTransactionStopped( TransactionID const &TranID)
-{
-   m_AFUDSMVirt = NULL;
-   m_AFUDSMSize =  0;
-   INFO("Transaction Stopped");
-   m_Sem.Post(1);
-}
-void SSSP::serviceEvent(const IEvent &rEvent)
-{
-   ERR("unexpected event 0x" << hex << rEvent.SubClassID());
-}
-// <end IServiceClient interface>
-
-/// @} group SudokuSample
-
-
-//=============================================================================
-// Name: main
-// Description: Entry point to the application
-// Inputs: none
-// Outputs: none
-// Comments: Main initializes the system. The rest of the example is implemented
-//           in the objects.
-//=============================================================================
+                    
 int main(int argc, char *argv[])
 {
-   RuntimeClient  runtimeClient;
-   SSSP theApp(&runtimeClient, argv[1]);
+    int opt;
+    int num_v = -1, num_e = -1;
+    int root = -1;
+    char *filename = NULL;
 
-   if(!runtimeClient.isOK()){
-      ERR("Runtime Failed to Start");
-      exit(1);
-   }
-   btInt Result = theApp.run();
+    while ((opt = getopt (argc, argv, ":v:e:r:f:d")) != -1) {
+        switch (opt) {
+            case 'v':
+                num_v = atoi(optarg);
+                break;
+            case 'e':
+                num_e = atoi(optarg);
+                break;
+            case 'f':
+                filename = optarg;
+                break;
+            case 'r':
+                root = atoi(optarg);
+                break;
+            case 'd':
+                debug = 1;
+                break;
+            case '?':
+                printf("Unknown option: %c\n", opt);
+                return -EINVAL;
+        }
+    }
 
-   MSG("Done");
-   return Result;
+    if (num_v < 0 || num_e < 0 || root < 0) {
+        printf("Missing arguments.\n");
+        return -EINVAL;
+    }
+
+    graph_t *graph = graph_init(num_v, num_e, filename);
+
+    if (debug) {
+        printf("read done\n");
+    }
+
+    if (graph == NULL) {
+        return -ENOENT;
+    }
+
+    if (graph->num_v <= root) {
+        return -EFAULT;
+    }
+
+    sssp_sw(graph, root);
+
+    int i, cnt = 0;
+    for (i = 0; i < graph->num_v; i++) {
+        if (graph->vertices[i].winf == 0) {
+            cnt++;
+        }
+    }
+    printf("vertex %d connects to %d of %d vertices\n", root, cnt, graph->num_v);
+
+    return 0;
 }
 
