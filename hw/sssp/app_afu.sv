@@ -116,22 +116,22 @@ module sssp_app_top
 		.T0_fifo_overflow()
 		);
 
-    logic fifo_c1tx_dout_v_q, fifo_c1tx_dout_v_qq;
-    assign fifo_c1tx_rdack = fifo_c1tx_dout_v;
+    logic fifo_c1tx_rdack_q, fifo_c1tx_rdack_qq;
+    assign fifo_c1tx_rdack = fifo_c1tx_dout_v & ~sRx.c1TxAlmFull;
     always_ff @(posedge clk)
     begin
         if (reset)
         begin
-            fifo_c1tx_dout_v_q <= 0;
-            fifo_c1tx_dout_v_qq <= 0;
+            fifo_c1tx_rdack_q <= 0;
+            fifo_c1tx_rdack_qq <= 0;
             af2cp_sTx.c1.valid <= 0;
         end
         else
         begin
-            fifo_c1tx_dout_v_q <= fifo_c1tx_dout_v;
-            fifo_c1tx_dout_v_qq <= fifo_c1tx_dout_v_q;
+            fifo_c1tx_rdack_q <= fifo_c1tx_dout_v & ~sRx.c1TxAlmFull;
+            fifo_c1tx_rdack_qq <= fifo_c1tx_rdack_q;
 
-            if (fifo_c1tx_dout_v_qq)
+            if (fifo_c1tx_rdack_qq)
                 af2cp_sTx.c1 <= fifo_c1tx_dout;
             else
                 af2cp_sTx.c1 <= t_if_ccip_c1_Tx'(0);
@@ -147,16 +147,18 @@ module sssp_app_top
 	localparam MMIO_CSR_STATUS_ADDR = 0;
     localparam MMIO_CSR_VERTEX_ADDR = 1;
     localparam MMIO_CSR_VERTEX_NCL = 2;
-    localparam MMIO_CSR_EDGE_ADDR = 3;
-    localparam MMIO_CSR_EDGE_NCL = 4;
-    localparam MMIO_CSR_UPDATE_BIN_ADDR = 5;
-    localparam MMIO_CSR_LEVEL = 6;
-    localparam MMIO_CSR_CONTROL = 7;
+    localparam MMIO_CSR_VERTEX_IDX = 3;
+    localparam MMIO_CSR_EDGE_ADDR = 4;
+    localparam MMIO_CSR_EDGE_NCL = 5;
+    localparam MMIO_CSR_UPDATE_BIN_ADDR = 6;
+    localparam MMIO_CSR_LEVEL = 7;
+    localparam MMIO_CSR_CONTROL = 8;
 
     t_ccip_clAddr csr_status_addr;
     t_ccip_clAddr csr_vertex_addr;
     t_ccip_clAddr csr_edge_addr;
     t_ccip_clAddr csr_update_bin_addr;
+    logic [31:0] csr_vertex_idx;
     logic [31:0] csr_vertex_ncl;
     logic [31:0] csr_edge_ncl;
     logic [15:0] csr_level;
@@ -174,6 +176,7 @@ module sssp_app_top
         csrs.cpu_rd_csrs[MMIO_CSR_STATUS_ADDR].data = t_ccip_mmioData'(csr_status_addr);
         csrs.cpu_rd_csrs[MMIO_CSR_VERTEX_ADDR].data = t_ccip_mmioData'(csr_vertex_addr);
 		csrs.cpu_rd_csrs[MMIO_CSR_VERTEX_NCL].data = t_ccip_mmioData'(csr_vertex_ncl);
+		csrs.cpu_rd_csrs[MMIO_CSR_VERTEX_IDX].data = t_ccip_mmioData'(csr_vertex_idx);
         csrs.cpu_rd_csrs[MMIO_CSR_EDGE_ADDR].data = t_ccip_mmioData'(csr_edge_addr);
 		csrs.cpu_rd_csrs[MMIO_CSR_EDGE_NCL].data = t_ccip_mmioData'(csr_edge_ncl);
         csrs.cpu_rd_csrs[MMIO_CSR_UPDATE_BIN_ADDR].data = t_ccip_mmioData'(csr_update_bin_addr);
@@ -191,6 +194,7 @@ module sssp_app_top
             csr_vertex_addr <= t_ccip_clAddr'(0);
             csr_edge_addr <= t_ccip_clAddr'(0);
             csr_vertex_ncl <= 32'h0;
+            csr_vertex_idx <= 32'h0;
             csr_edge_ncl <= 32'h0;
             csr_level <= 32'h0;
 		end
@@ -209,6 +213,10 @@ module sssp_app_top
                 csr_vertex_ncl <= csrs.cpu_wr_csrs[MMIO_CSR_VERTEX_NCL].data[31:0];
             end
 
+            if (csrs.cpu_wr_csrs[MMIO_CSR_VERTEX_IDX].en) begin
+                csr_vertex_idx <= csrs.cpu_wr_csrs[MMIO_CSR_VERTEX_IDX].data[31:0];
+            end
+
             if (csrs.cpu_wr_csrs[MMIO_CSR_EDGE_ADDR].en) begin
                 csr_edge_addr <= t_ccip_clAddr'(csrs.cpu_wr_csrs[MMIO_CSR_EDGE_ADDR].data);
             end
@@ -218,7 +226,7 @@ module sssp_app_top
             end
 
             if (csrs.cpu_wr_csrs[MMIO_CSR_UPDATE_BIN_ADDR].en) begin
-                csr_edge_ncl <= csrs.cpu_wr_csrs[MMIO_CSR_UPDATE_BIN_ADDR].data[31:0];
+                csr_update_bin_addr <= t_ccip_clAddr'(csrs.cpu_wr_csrs[MMIO_CSR_UPDATE_BIN_ADDR].data);
             end
 
             if (csrs.cpu_wr_csrs[MMIO_CSR_LEVEL].en) begin
@@ -270,6 +278,17 @@ module sssp_app_top
         .done(dma_done)
         );
 
+    always_ff @(posedge clk)
+    begin
+        if (reset) begin
+            dma_out_valid_q <= 0;
+        end
+        else begin
+            dma_out_q <= dma_out;
+            dma_out_valid_q <= dma_out_valid;
+        end
+    end
+
     logic [31:0] sssp_word_in_addr;
     logic [1:0] sssp_control;
     logic [15:0] sssp_current_level;
@@ -279,10 +298,12 @@ module sssp_app_top
     logic sssp_word_out_valid;
     logic sssp_reset;
 
+    logic sssp_last_input_in;
+
     sssp sssp_inst(
         .clk(clk),
         .rst(reset),
-        .last_input_in(dma_done),
+        .last_input_in(sssp_last_input_in),
         .word_in(dma_out_q),
         .w_addr(sssp_word_in_addr),
         .word_in_valid(dma_out_valid_q),
@@ -333,6 +354,8 @@ module sssp_app_top
         end
     end
 
+    assign sssp_last_input_in = dma_done && state == MAIN_FSM_PROCESS_EDGE;
+
     logic vertex_dma_started;
     logic edge_dma_started;
     logic [31:0] write_cls;
@@ -348,6 +371,7 @@ module sssp_app_top
         sTx.c1.hdr.mdata = 0;
         sTx.c1.hdr.rsvd0 = 0;
         sTx.c1.hdr.rsvd1 = 0;
+        sTx.c1.hdr.rsvd2 = 0;
     end
 
     /* dma read, sssp, and write request */
@@ -361,6 +385,7 @@ module sssp_app_top
         else begin
             sssp_reset <= 0;
             dma_drop <= (fifo_c1tx_count >= 2);
+            sTx.c1.valid <= 0;
 
             case (state)
                 MAIN_FSM_IDLE: begin
@@ -374,6 +399,8 @@ module sssp_app_top
                     write_cls <= 0;
 
                     num_write_req <= 0;
+
+                    sssp_word_in_addr <= csr_vertex_idx;
                 end
                 MAIN_FSM_READ_VERTEX: begin
                     /* start dma when entering this state */
@@ -391,7 +418,7 @@ module sssp_app_top
 
                     /* configure sssp */
                     sssp_control <= 2'b01;
-                    sssp_word_in_addr <= (sssp_word_in_addr + dma_out_valid_q) << 3;
+                    sssp_word_in_addr <= (sssp_word_in_addr + (dma_out_valid_q << 3));
                 end
                 MAIN_FSM_PROCESS_EDGE: begin
                     /* send out requests */

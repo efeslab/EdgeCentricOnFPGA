@@ -33,7 +33,6 @@ module dma_read_engine
 
     logic [31:0] req_idx, rsp_idx;
     logic [7:0] drop_id;
-    logic can_read;
     logic req_done, rsp_done;
 
     assign req_done = req_idx == src_ncl;
@@ -112,6 +111,7 @@ module dma_read_engine
                      * the last request, req_idx becomes src_ncl. However,
                      * the FSM may keep in the run state for an additional
                      * cycle. */
+                    c0tx <= t_if_ccip_c0_Tx'(0);
                     c0tx.valid <= (req_idx != src_ncl);
                     c0tx.hdr.vc_sel <= eVC_VA;
                     c0tx.hdr.cl_len <= eCL_LEN_1;
@@ -147,6 +147,7 @@ module dma_read_engine
         if (reset) begin
             rsp_idx <= 0;
             drop_id_increased <= 0;
+            drop_id <= 0;
         end
         else begin
             /* It's fine to always feed the data to 'out',
@@ -159,6 +160,7 @@ module dma_read_engine
             case (state)
                 STATE_IDLE: begin
                     rsp_idx <= 0;
+                    drop_id <= 0;
                 end
                 STATE_READ_PAUSE,
                 STATE_READ_WAIT,

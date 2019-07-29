@@ -97,7 +97,9 @@ module filter(
         end
         else begin
             s2[0] <= s1[0];
+            v2[0] <= v1[0];
             s2[3] <= s1[3];
+            v2[3] <= v1[3];
 
             if (v1[2]) begin
                 s2[1] <= s1[2];

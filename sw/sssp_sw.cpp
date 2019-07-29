@@ -4,25 +4,12 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <string.h>
-#include <stdint.h>
-#include <unistd.h>
 
-#include "vai_svc_wrapper.h"
-
-#define MMIO_CSR_STATUS_ADDR 0
-#define MMIO_CSR_VERTEX_ADDR 1
-#define MMIO_CSR_VERTEX_NCL 2
-#define MMIO_CSR_VERTEX_IDX 3
-#define MMIO_CSR_EDGE_ADDR 4
-#define MMIO_CSR_EDGE_NCL 5
-#define MMIO_CSR_UPDATE_BIN_ADDR 6
-#define MMIO_CSR_LEVEL 7
-#define MMIO_CSR_CONTROL 8
+#define CL 64
 
 static int debug = 0;
 
 extern "C" {
-
 typedef struct {
     uint32_t weight;
     uint16_t level;
@@ -31,7 +18,7 @@ typedef struct {
     uint16_t rsvd:14;
 } vertex_t;
 
-#define VERTEX_PER_CL (CL(1)/sizeof(vertex_t))
+#define VERTEX_PER_CL (CL/sizeof(vertex_t))
 #define VERTEX(w,l,wi,li) (vertex_t) {  \
     .weight = (w),                      \
     .level = (l),                       \
@@ -49,7 +36,7 @@ typedef struct {
     uint32_t rsvd;
 } edge_t;
 
-#define EDGE_PER_CL (CL(1)/sizeof(edge_t))
+#define EDGE_PER_CL (CL/sizeof(edge_t))
 #define EDGE(s,d,w) (edge_t) {  \
     .src = (s),                 \
     .dst = (d),                 \
@@ -72,11 +59,11 @@ typedef struct {
     .weight = (w)       \
 }
 
-#define UPDATE_PER_CL (CL(1)/sizeof(update_t))
+#define UPDATE_PER_CL (CL/sizeof(update_t))
 
 typedef struct {
       uint32_t edge_start_offset;
-      uint64_t edge_start_cl;
+      uint32_t edge_start_cl;
       uint32_t num_edges;
       uint32_t num_cls;
 
@@ -102,16 +89,9 @@ typedef struct {
 
 } graph_t;
 
-typedef struct {
-    uint64_t valid;
-    uint32_t size;
-    uint32_t rsvd;
-    uint64_t padding[4];
-} status_t;
-
 } /* C */
 
-graph_t *graph_init(VAI_SVC_WRAPPER *fpga, int num_v, int num_e, char *filename)
+graph_t *graph_init(int num_v, int num_e, char *filename)
 {
     int i, j;
     FILE *fp;
@@ -123,11 +103,11 @@ graph_t *graph_init(VAI_SVC_WRAPPER *fpga, int num_v, int num_e, char *filename)
         return NULL;
     }
 
-    graph_t *g = (graph_t *) fpga->allocBuffer(sizeof(graph_t));
+    graph_t *g = (graph_t *) malloc(sizeof(graph_t));
     g->num_v = num_v;
     g->num_e = num_e;
-    g->vertices = (vertex_t *) fpga->allocBuffer(sizeof(vertex_t) * num_v);
-    g->edges = (edge_t *) fpga->allocBuffer(sizeof(edge_t) * num_e);
+    g->vertices = (vertex_t *) malloc(sizeof(vertex_t) * num_v);
+    g->edges = (edge_t *) malloc(sizeof(edge_t) * num_e);
     g->v2e = (v2e_t *) malloc(sizeof(v2e_t) * num_v);
 
     for (i = 0; i < num_v; i++) {
@@ -185,10 +165,10 @@ graph_t *graph_init(VAI_SVC_WRAPPER *fpga, int num_v, int num_e, char *filename)
             ne = end_off - start_off;
         }
 
-        start_cl = ((uint64_t) &g->edges[start_off]) / CL(1);
-        end_cl = ((uint64_t) &g->edges[end_off]) / CL(1);
+        start_cl = ((uint64_t) &g->edges[start_off]) / CL;
+        end_cl = ((uint64_t) &g->edges[end_off]) / CL;
 
-        if ((uint64_t) &g->edges[end_off] % CL(1) != 0) {
+        if ((uint64_t) &g->edges[end_off] % CL != 0) {
             end_cl += 1;
         }
 
@@ -199,11 +179,7 @@ graph_t *graph_init(VAI_SVC_WRAPPER *fpga, int num_v, int num_e, char *filename)
         g->intervals[i].num_edges = ne;
         g->intervals[i].num_cls = ncl;
 
-        printf("[%d]: edge_off: %x, edge_cl: %#lx, num_edges: %x, num_cls: %x\n",
-                    i, start_off, start_cl, ne, ncl);
-
-        g->intervals[i].update_bin =
-            (update_t *) fpga->allocBuffer(sizeof(update_t) * NUM_UPDATE_BIN_ENTRIES);
+        g->intervals[i].update_bin = (update_t *)malloc(sizeof(update_t) * NUM_UPDATE_BIN_ENTRIES);
         g->intervals[i].num_updates = 0;
         g->intervals[i].num_active_vertices = 0;
     }
@@ -218,14 +194,11 @@ error:
     return NULL;
 }
 
-int sssp(VAI_SVC_WRAPPER *fpga, graph_t *g, int root)
+int sssp_sw(graph_t *g, int root)
 {
     int have_update;
     int current_level;
     int i, j, k;
-
-    status_t *status = (status_t *)fpga->allocBuffer(sizeof(status_t));
-    fpga->mmioWrite64(MMIO_CSR_STATUS_ADDR, (uint64_t)status/CL(1));
 
     if (root >= g->num_v) {
         return -EFAULT;
@@ -246,47 +219,33 @@ int sssp(VAI_SVC_WRAPPER *fpga, graph_t *g, int root)
         }
 
         /* scatter */
-		for (i = 0; i < g->num_intervals; i++) {
+        for (i = 0; i < g->num_intervals; i++) {
             interval_t *curr = &g->intervals[i];
             if (curr->num_active_vertices == 0) {
                 continue;
             }
 
+            /* we need to set num_active_vertices to 0 */
             curr->num_active_vertices = 0;
-
-            uint64_t vertex_start_cl = (uint64_t)&g->vertices[i*VERTEX_PER_INTERVAL]/CL(1);
-            uint64_t vertex_ncl;
-
-            if (i < g->num_intervals - 1 || g->num_v % VERTEX_PER_INTERVAL == 0) {
-                vertex_ncl = VERTEX_PER_INTERVAL * sizeof(vertex_t) / CL(1);
+            
+            int update_cnt = 0;
+            int start_vidx = INTERVAL_TO_VERTEX(i);
+            int end_vidx = start_vidx + VERTEX_PER_INTERVAL;
+            for (j = 0; j < curr->num_edges; j++) {
+                edge_t *e = &g->edges[curr->edge_start_offset + j];
+                vertex_t *src_v = &g->vertices[e->src];
+                if (e->src >= start_vidx && e->src < end_vidx /* inside interval */
+                        && IS_ACTIVE(src_v, current_level)) { /* src is active */
+                    curr->update_bin[update_cnt] = UPDATE(e->dst, src_v->weight + e->weight);
+                    update_cnt++;
+                }
             }
-            else {
-                vertex_ncl =
-                    (g->num_v % VERTEX_PER_INTERVAL * sizeof(vertex_t) - 1) / CL(1) + 1;
+            curr->num_updates = update_cnt;
+
+            if (debug) {
+                printf("interval %d: %d updates\n", i, update_cnt);
             }
-
-            fpga->mmioWrite64(MMIO_CSR_VERTEX_ADDR, vertex_start_cl);
-            fpga->mmioWrite64(MMIO_CSR_VERTEX_NCL, vertex_ncl);
-            fpga->mmioWrite64(MMIO_CSR_VERTEX_IDX, i*VERTEX_PER_INTERVAL);
-            fpga->mmioWrite64(MMIO_CSR_EDGE_ADDR, curr->edge_start_cl);
-            fpga->mmioWrite64(MMIO_CSR_EDGE_NCL, curr->num_cls);
-            fpga->mmioWrite64(MMIO_CSR_UPDATE_BIN_ADDR, ((uint64_t)curr->update_bin) / CL(1));
-            fpga->mmioWrite64(MMIO_CSR_LEVEL, current_level);
-
-            /* start */
-            status->valid = 0;
-            fpga->mmioWrite64(MMIO_CSR_CONTROL, 1);
-
-            while (status->valid == 0) {
-                usleep(500000);
-                printf("pooling...\n");
-            }
-
-            printf("level %d interval %d: %d updates\n",
-                            current_level, i, status->size);
         }
-
-
 
         /* gather */
         for (i = 0; i < g->num_intervals; i++) {
@@ -339,7 +298,6 @@ int sssp(VAI_SVC_WRAPPER *fpga, graph_t *g, int root)
                     
 int main(int argc, char *argv[])
 {
-    VAI_SVC_WRAPPER fpga;
     int opt;
     int num_v = -1, num_e = -1;
     int root = -1;
@@ -373,7 +331,7 @@ int main(int argc, char *argv[])
         return -EINVAL;
     }
 
-    graph_t *graph = graph_init(&fpga, num_v, num_e, filename);
+    graph_t *graph = graph_init(num_v, num_e, filename);
 
     if (debug) {
         printf("read done\n");
@@ -387,7 +345,7 @@ int main(int argc, char *argv[])
         return -EFAULT;
     }
 
-    sssp(&fpga, graph, root);
+    sssp_sw(graph, root);
 
     int i, cnt = 0;
     for (i = 0; i < graph->num_v; i++) {
