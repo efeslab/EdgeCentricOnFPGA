@@ -27,20 +27,18 @@ typedef struct {
     uint32_t weight;
     uint16_t level;
     uint16_t winf:1;
-    uint16_t linf:1;
-    uint16_t rsvd:14;
+    uint16_t rsvd:15;
 } vertex_t;
 
 #define VERTEX_PER_CL (CL(1)/sizeof(vertex_t))
-#define VERTEX(w,l,wi,li) (vertex_t) {  \
+#define VERTEX(w,l,wi) (vertex_t) {  \
     .weight = (w),                      \
     .level = (l),                       \
     .winf = (wi),                       \
-    .linf = (li),                       \
     .rsvd = 0                           \
 }
 #define IS_ACTIVE(v,curr_lvl) \
-    ((v)->linf == 0 && (v)->level == (curr_lvl))
+    ((v)->level == (curr_lvl))
 
 typedef struct {
     uint32_t src;
@@ -126,15 +124,15 @@ graph_t *graph_init(VAI_SVC_WRAPPER *fpga, int num_v, int num_e, char *filename)
     graph_t *g = (graph_t *) fpga->allocBuffer(sizeof(graph_t));
     g->num_v = num_v;
     g->num_e = num_e;
-    g->vertices = (vertex_t *) fpga->allocBuffer(sizeof(vertex_t) * num_v);
-    g->edges = (edge_t *) fpga->allocBuffer(sizeof(edge_t) * num_e);
+    g->vertices = (vertex_t *) fpga->allocBuffer(sizeof(vertex_t) * ((num_v-1)/8+1)*8);
+    g->edges = (edge_t *) fpga->allocBuffer(sizeof(edge_t) * ((num_e-1)/8+1)*8);
     g->v2e = (v2e_t *) malloc(sizeof(v2e_t) * num_v);
 
     for (i = 0; i < num_v; i++) {
-        g->vertices[i] = VERTEX(0, 0, 1, 1);
+        g->vertices[i] = VERTEX(0, 0, 1);
     }
 
-    memset(g->edges, 0x0, num_e*sizeof(edge_t));
+    memset(g->edges, 0x0, ((num_e-1)/8+1)*8*sizeof(edge_t));
     memset(g->v2e, 0x0, num_v*sizeof(v2e_t));
 
     if (fscanf(fp, "%u %u\n", &s, &d) != EOF) {
@@ -208,6 +206,11 @@ graph_t *graph_init(VAI_SVC_WRAPPER *fpga, int num_v, int num_e, char *filename)
         g->intervals[i].num_active_vertices = 0;
     }
 
+    for (i = 0; i < num_e; i++) {
+        edge_t *e = &g->edges[i];
+        printf("[%d]: src=%#lx, dst=%#lx, w=%#lx\n", i, e->src, e->dst, e->weight);
+    }
+
     return g;
 
 error:
@@ -231,11 +234,10 @@ int sssp(VAI_SVC_WRAPPER *fpga, graph_t *g, int root)
         return -EFAULT;
     }
     g->vertices[root].winf = 0;
-    g->vertices[root].linf = 0;
-    g->vertices[root].level = 0;
+    g->vertices[root].level = 1;
     g->intervals[VERTEX_TO_INTERVAL(root)].num_active_vertices = 1;
     have_update = 1;
-    current_level = 0;
+    current_level = 1;
 
     while (have_update) {
         have_update = 0;
@@ -282,8 +284,13 @@ int sssp(VAI_SVC_WRAPPER *fpga, graph_t *g, int root)
                 printf("pooling...\n");
             }
 
-            printf("level %d interval %d: %d updates\n",
-                            current_level, i, status->size);
+            curr->num_updates = status->size;
+
+            for (j = 0; j < curr->num_updates; j++) {
+                printf("update: vertex %d to %d\n",
+                        curr->update_bin[j].vertex,
+                        curr->update_bin[j].weight);
+            }
         }
 
 
@@ -312,7 +319,6 @@ int sssp(VAI_SVC_WRAPPER *fpga, graph_t *g, int root)
                     update_vertex->weight = update->weight;
                     update_vertex->level = current_level + 1;
                     update_vertex->winf = 0;
-                    update_vertex->linf = 0;
                     g->intervals[vertex_interval].num_active_vertices++;
                     active_cnt++;
                 }
@@ -336,7 +342,7 @@ int sssp(VAI_SVC_WRAPPER *fpga, graph_t *g, int root)
 
     return 0;
 }
-                    
+
 int main(int argc, char *argv[])
 {
     VAI_SVC_WRAPPER fpga;

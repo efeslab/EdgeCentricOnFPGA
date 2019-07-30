@@ -36,7 +36,7 @@ module sssp_pipeline #(
     edge_t target_edge;
     edge_t target_edge_q;
     edge_t target_edge_qq;
-    assign target_edge = edge_t'(word_in[pipeline_id*128+127:pipeline_id*128]);
+    assign target_edge = int128_to_edge(word_in[pipeline_id*128+127:pipeline_id*128]);
 
     logic [23:0] w_addr_prefix;
     always_ff @(posedge clk)
@@ -53,6 +53,7 @@ module sssp_pipeline #(
     logic should_update;
     logic prefix_match;
     logic level_match;
+    logic edge_valid;
     logic [63:0] word_out_prepare;
 
     vertex_ram #(.ADDR_W(ADDR_W))
@@ -88,6 +89,11 @@ module sssp_pipeline #(
 
             target_edge_q <= edge_t'(0);
             target_edge_qq <= edge_t'(0);
+
+            should_update <= 0;
+            prefix_match <= 0;
+            level_match <= 0;
+            edge_valid <= 0;
         end
         else begin
 
@@ -121,10 +127,13 @@ module sssp_pipeline #(
              * contains the last 8 bits. */
             prefix_match <= (w_addr_prefix == target_edge_qq.src[31:ADDR_W]);
             level_match <= (vertex_out.level == current_level);
+            /* Currently we just check whether src == dst, however, we
+             * should have a bit to indicate whether an edge is valid. */
+            edge_valid <= (target_edge_qq.src != target_edge_qq.dst);
             word_out_prepare <=
-                {target_edge_qq.dst, target_edge_qq.weight + vertex_out.weight};
+                {target_edge_qq.weight + vertex_out.weight, target_edge_qq.dst};
 
-            if (should_update & level_match & prefix_match) begin
+            if (should_update & level_match & prefix_match & edge_valid) begin
                 word_out <= word_out_prepare;
                 valid_out <= 1'b1;
             end

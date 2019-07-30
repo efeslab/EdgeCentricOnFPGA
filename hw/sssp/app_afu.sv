@@ -302,7 +302,7 @@ module sssp_app_top
 
     sssp sssp_inst(
         .clk(clk),
-        .rst(reset),
+        .rst(sssp_reset | reset),
         .last_input_in(sssp_last_input_in),
         .word_in(dma_out_q),
         .w_addr(sssp_word_in_addr),
@@ -465,17 +465,13 @@ module sssp_app_top
 			num_write_rsp <= 32'h0;
             responses_received <= 0;
 		end
-		else if (sRx.c1.rspValid == 1'b1) begin
-            if (sRx.c1.hdr.format == 1'b0)
-			    num_write_rsp <= num_write_rsp + 1;
-            else begin
-                case (sRx.c1.hdr.cl_num)
-                    eCL_LEN_1: num_write_rsp <= num_write_rsp + 1;
-                    eCL_LEN_2: num_write_rsp <= num_write_rsp + 2;
-                    eCL_LEN_4: num_write_rsp <= num_write_rsp + 4;
-                endcase
+        else begin
+            if (state == MAIN_FSM_IDLE) begin
+                num_write_rsp <= 0;
             end
-
+            else if (sRx.c1.rspValid == 1'b1) begin
+                num_write_rsp <= num_write_rsp + 1;
+            end
             responses_received <= (num_write_req == num_write_rsp);
 		end
 	end

@@ -22,8 +22,6 @@ module filter(
 
     logic li0, li1, li2, li3;
 
-    integer i;
-
     /* stage 0: input */
     always_comb
     begin
@@ -96,10 +94,18 @@ module filter(
             li2 <= 0;
         end
         else begin
-            s2[0] <= s1[0];
-            v2[0] <= v1[0];
-            s2[3] <= s1[3];
-            v2[3] <= v1[3];
+            if (v1[3]) begin
+                s2[3] <= s1[0];
+                v2[3] <= v1[0];
+                s2[0] <= s1[3];
+                v2[0] <= v1[3];
+            end
+            else begin
+                s2[0] <= s1[0];
+                v2[0] <= v1[0];
+                s2[3] <= s1[3];
+                v2[3] <= v1[3];
+            end
 
             if (v1[2]) begin
                 s2[1] <= s1[2];

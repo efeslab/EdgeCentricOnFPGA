@@ -38,14 +38,14 @@ module vertex_ram #(
 
     logic [2:0] r_addr_buff;
 
-    vertex_t bank [15:0];
+    vertex_t bank [7:0];
 
     genvar i;
     generate
         for (i = 0; i < 8; i++)
         begin: banks
             vertex_t v;
-            assign v = vertex_t'(cl_in[i * 32 + 49: i * 32]);
+            assign v = int64_to_vertex(cl_in[i * 64 + 49: i * 64]);
 
             vertex_bank #(.ADDR_W(ADDR_W-3))
             banks(

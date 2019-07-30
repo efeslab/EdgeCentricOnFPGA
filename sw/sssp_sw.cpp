@@ -14,8 +14,7 @@ typedef struct {
     uint32_t weight;
     uint16_t level;
     uint16_t winf:1;
-    uint16_t linf:1;
-    uint16_t rsvd:14;
+    uint16_t rsvd:15;
 } vertex_t;
 
 #define VERTEX_PER_CL (CL/sizeof(vertex_t))
@@ -23,11 +22,10 @@ typedef struct {
     .weight = (w),                      \
     .level = (l),                       \
     .winf = (wi),                       \
-    .linf = (li),                       \
     .rsvd = 0                           \
 }
 #define IS_ACTIVE(v,curr_lvl) \
-    ((v)->linf == 0 && (v)->level == (curr_lvl))
+    ((v)->level == (curr_lvl))
 
 typedef struct {
     uint32_t src;
@@ -204,11 +202,10 @@ int sssp_sw(graph_t *g, int root)
         return -EFAULT;
     }
     g->vertices[root].winf = 0;
-    g->vertices[root].linf = 0;
-    g->vertices[root].level = 0;
+    g->vertices[root].level = 1;
     g->intervals[VERTEX_TO_INTERVAL(root)].num_active_vertices = 1;
     have_update = 1;
-    current_level = 0;
+    current_level = 1;
 
     while (have_update) {
         have_update = 0;
@@ -245,6 +242,12 @@ int sssp_sw(graph_t *g, int root)
             if (debug) {
                 printf("interval %d: %d updates\n", i, update_cnt);
             }
+
+            for (j = 0; j < curr->num_updates; j++) {
+                printf("update: vertex %d to %d\n",
+                        curr->update_bin[j].vertex,
+                        curr->update_bin[j].weight);
+            }
         }
 
         /* gather */
@@ -271,13 +274,13 @@ int sssp_sw(graph_t *g, int root)
                     update_vertex->weight = update->weight;
                     update_vertex->level = current_level + 1;
                     update_vertex->winf = 0;
-                    update_vertex->linf = 0;
                     g->intervals[vertex_interval].num_active_vertices++;
                     active_cnt++;
                 }
             }
 
             curr->num_updates = 0;
+
         }
 
         for (i = 0; i < g->num_intervals; i++) {

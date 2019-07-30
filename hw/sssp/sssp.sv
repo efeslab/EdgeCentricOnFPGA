@@ -61,7 +61,7 @@ module sssp #(
         );
 
 
-    logic [63:0] update_buffer [7:0];
+    logic [63:0] update_buffer [6:0];
     logic [2:0] buffer_counter;
     logic filter_last_input_out_q;
     logic [31:0] total_counter;
@@ -85,9 +85,10 @@ module sssp #(
                 done <= 1'b1;
                 update_entry_count <= total_counter + buffer_counter;
                 if (buffer_counter) begin
-                    for (i = 0; i < 8; i = i + 1) begin
+                    for (i = 0; i < 7; i = i + 1) begin
                         word_out[i * 64 +: 64] <= update_buffer[i];
                     end
+                    word_out[7 * 64 +: 64] <= 64'h0;
                     word_out_valid <= 1'b1;
                 end
                 else begin
@@ -100,7 +101,7 @@ module sssp #(
                         buffer_counter <= buffer_counter;
                         word_out_valid <= 1'b0;
                     end
-                    4'b1000: begin
+                    4'b0001: begin
                         if (buffer_counter < 7) begin
                             buffer_counter <= buffer_counter + 1;
                             update_buffer[buffer_counter] <= filter_word_out[0];
@@ -118,7 +119,7 @@ module sssp #(
                             total_counter <= total_counter + 8;
                         end
                     end
-                    4'b1100: begin
+                    4'b0011: begin
                         if (buffer_counter < 6) begin
                             buffer_counter <= buffer_counter + 2;
                             update_buffer[buffer_counter] <= filter_word_out[0];
@@ -150,7 +151,7 @@ module sssp #(
                             total_counter <= total_counter + 8;
                         end
                     end
-                    4'b1110: begin
+                    4'b0111: begin
                         if (buffer_counter < 5) begin
                             buffer_counter <= buffer_counter + 3;
                             update_buffer[buffer_counter] <= filter_word_out[0];
@@ -265,7 +266,7 @@ module sssp #(
                     end
                     default: begin
                         word_out_valid <= 1'b0;
-                        $display("fital error. this should not happen\n");
+                        $display("error: filter_word_out_valid=%b\n", filter_word_out_valid);
                         $finish;
                     end
                 endcase
