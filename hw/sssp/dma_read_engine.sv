@@ -18,7 +18,9 @@ module dma_read_engine
     
     output logic [511:0] out,
     output logic out_valid,
-    output logic done
+    output logic done,
+
+    output logic [3:0] state_out
 );
 
     typedef enum {
@@ -30,6 +32,8 @@ module dma_read_engine
         STATE_FINISH
     } rd_state_t;
     rd_state_t state;
+
+    assign state_out = state_out;
 
     logic [31:0] req_idx, rsp_idx;
     logic [7:0] drop_id;
@@ -98,6 +102,7 @@ module dma_read_engine
     begin
         if (reset) begin
             req_idx <= 0;
+            c0tx.valid <= 1'b0;
         end
         else begin
             c0tx.valid <= 1'b0;

@@ -83,7 +83,12 @@ module sssp_app_top
     t_if_ccip_Tx sTx, pre_sTx;
 	always_ff @(posedge clk)
     begin
-        af2cp_sTx.c0 <= sTx.c0;
+        if (reset) begin
+            af2cp_sTx.c0.valid <= 0;
+        end
+        else begin
+            af2cp_sTx.c0 <= sTx.c0;
+        end
     end
     assign af2cp_sTx.c2.mmioRdValid = 1'b0;
 
@@ -143,6 +148,15 @@ module sssp_app_top
     t_ccip_c0_ReqMmioHdr mmio_req_hdr;
     assign mmio_req_hdr = t_ccip_c0_ReqMmioHdr'(sRx.c0.hdr);
 
+    typedef enum {
+        MAIN_FSM_IDLE,
+        MAIN_FSM_READ_VERTEX,
+        MAIN_FSM_PROCESS_EDGE,
+        MAIN_FSM_WRITE_RESULT,
+        MAIN_FSM_FINISH
+    } main_fsm_state_t;
+    main_fsm_state_t state;
+
 
 	localparam MMIO_CSR_STATUS_ADDR = 0;
     localparam MMIO_CSR_VERTEX_ADDR = 1;
@@ -162,7 +176,9 @@ module sssp_app_top
     logic [31:0] csr_vertex_ncl;
     logic [31:0] csr_edge_ncl;
     logic [15:0] csr_level;
-    logic csr_ctl_start; 
+    logic [3:0] dma_state;
+    logic dma_drop;
+    logic csr_ctl_start;
 
     always_comb
     begin
@@ -181,7 +197,7 @@ module sssp_app_top
 		csrs.cpu_rd_csrs[MMIO_CSR_EDGE_NCL].data = t_ccip_mmioData'(csr_edge_ncl);
         csrs.cpu_rd_csrs[MMIO_CSR_UPDATE_BIN_ADDR].data = t_ccip_mmioData'(csr_update_bin_addr);
         csrs.cpu_rd_csrs[MMIO_CSR_LEVEL].data = t_ccip_mmioData'(csr_level);
-        csrs.cpu_rd_csrs[MMIO_CSR_CONTROL].data = t_ccip_mmioData'(0);
+        csrs.cpu_rd_csrs[MMIO_CSR_CONTROL].data = t_ccip_mmioData'({32'h0, 15'h0, dma_drop, 8'(state), 8'(dma_state)});
 
     end
 
@@ -247,18 +263,9 @@ module sssp_app_top
         end
     end
 
-    typedef enum {
-        MAIN_FSM_IDLE,
-        MAIN_FSM_READ_VERTEX,
-        MAIN_FSM_PROCESS_EDGE,
-        MAIN_FSM_WRITE_RESULT,
-        MAIN_FSM_FINISH
-    } main_fsm_state_t;
-
     t_ccip_clAddr dma_src_addr;
     logic [31:0] dma_src_ncl;
     logic dma_start;
-    logic dma_drop;
     logic [511:0] dma_out, dma_out_q;
     logic dma_out_valid, dma_out_valid_q;
     logic dma_done;
@@ -275,7 +282,8 @@ module sssp_app_top
         .c0tx(sTx.c0),
         .out(dma_out),
         .out_valid(dma_out_valid),
-        .done(dma_done)
+        .done(dma_done),
+        .state_out(dma_state)
         );
 
     always_ff @(posedge clk)
@@ -319,7 +327,6 @@ module sssp_app_top
     logic responses_received;
 
     /* the main state machine */
-    main_fsm_state_t state;
     always_ff @(posedge clk)
     begin
         if (reset) begin
@@ -381,6 +388,7 @@ module sssp_app_top
             sssp_reset <= 1;
             vertex_dma_started <= 0;
             edge_dma_started <= 0;
+            sTx.c1.valid <= 0;
         end
         else begin
             sssp_reset <= 0;
