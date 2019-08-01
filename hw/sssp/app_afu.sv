@@ -392,6 +392,7 @@ module sssp_app_top
             dma_src_addr <= t_ccip_clAddr'(32'hffff0000);
             dma_src_ncl <= 32'hffffffff;
             dma_start <= 0;
+            dma_drop <= 0;
         end
         else begin
             sssp_reset <= 0;

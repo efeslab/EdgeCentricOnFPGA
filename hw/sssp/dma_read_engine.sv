@@ -33,7 +33,7 @@ module dma_read_engine
     } rd_state_t;
     rd_state_t state;
 
-    assign state_out = state_out;
+    assign state_out = state;
 
     logic [31:0] req_idx, rsp_idx;
     logic [7:0] drop_id;
@@ -153,6 +153,8 @@ module dma_read_engine
             rsp_idx <= 0;
             drop_id_increased <= 0;
             drop_id <= 0;
+            out_valid <= 1'b0;
+            done <= 0;
         end
         else begin
             /* It's fine to always feed the data to 'out',
