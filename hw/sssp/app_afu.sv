@@ -389,6 +389,9 @@ module sssp_app_top
             vertex_dma_started <= 0;
             edge_dma_started <= 0;
             sTx.c1.valid <= 0;
+            dma_src_addr <= t_ccip_clAddr'(32'hffff0000);
+            dma_src_ncl <= 32'hffffffff;
+            dma_start <= 0;
         end
         else begin
             sssp_reset <= 0;
