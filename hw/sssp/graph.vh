@@ -1,6 +1,8 @@
 `ifndef GRAPH_VH
 `define GRAPH_VH
 
+`include "cci_mpf_if.vh"
+
 typedef struct packed {
     logic [31:0] weight;
     logic [15:0] level;
