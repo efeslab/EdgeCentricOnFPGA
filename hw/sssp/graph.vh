@@ -62,4 +62,36 @@ typedef struct packed {
     logic [31:0] weight;
 } update_t;
 
+typedef struct packed {
+    t_ccip_clAddr status_addr;
+    t_ccip_clAddr update_bin_addr;
+    t_ccip_clAddr next_desc_addr;
+    t_ccip_clAddr vertex_addr;
+    t_ccip_clAddr edge_addr;
+
+    logic [31:0] vertex_ncl;
+    logic [31:0] vertex_idx;
+    logic [31:0] edge_ncl;
+    logic [15:0] level;
+
+    logic [63:0] seq_id;
+} desc_t;
+
+function desc_t int512_to_desc(
+    input logic [511:0] int512
+);
+    desc_t desc;
+    desc.status_addr = t_ccip_clAddr'(int512[63:0]);
+    desc.update_bin_addr = t_ccip_clAddr'(int512[127:64]);
+    desc.vertex_addr = t_ccip_clAddr'(int512[191:128]);
+    desc.vertex_ncl = int512[223:192];
+    desc.vertex_idx = int512[255:224];
+    desc.edge_addr = t_ccip_clAddr'(int512[319:256]);
+    desc.edge_ncl = int512[351:320];
+    desc.level = int512[367:352];
+    desc.seq_id = int512[447:384];
+    desc.next_desc_addr = t_ccip_clAddr'(int512[511:448]);
+    return desc;
+endfunction
+
 `endif
