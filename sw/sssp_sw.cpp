@@ -71,7 +71,6 @@ typedef struct {
 } interval_t;
 
 #define VERTEX_PER_INTERVAL 256
-#define NUM_UPDATE_BIN_ENTRIES 4096
 #define VERTEX_TO_INTERVAL(x) ((x)/VERTEX_PER_INTERVAL)
 #define INTERVAL_TO_VERTEX(x) ((x)*VERTEX_PER_INTERVAL)
 
@@ -177,7 +176,7 @@ graph_t *graph_init(int num_v, int num_e, char *filename)
         g->intervals[i].num_edges = ne;
         g->intervals[i].num_cls = ncl;
 
-        g->intervals[i].update_bin = (update_t *)malloc(sizeof(update_t) * NUM_UPDATE_BIN_ENTRIES);
+        g->intervals[i].update_bin = (update_t *)malloc(sizeof(update_t) * ne);
         g->intervals[i].num_updates = 0;
         g->intervals[i].num_active_vertices = 0;
     }
@@ -243,10 +242,12 @@ int sssp_sw(graph_t *g, int root)
                 printf("interval %d: %d updates\n", i, update_cnt);
             }
 
-            for (j = 0; j < curr->num_updates; j++) {
-                printf("update: vertex %d to %d\n",
-                        curr->update_bin[j].vertex,
-                        curr->update_bin[j].weight);
+            if (debug) {
+                for (j = 0; j < curr->num_updates; j++) {
+                    printf("update: vertex %d to %d\n",
+                            curr->update_bin[j].vertex,
+                            curr->update_bin[j].weight);
+                }
             }
         }
 

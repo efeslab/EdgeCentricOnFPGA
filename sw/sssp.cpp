@@ -105,7 +105,6 @@ typedef struct {
 } interval_t;
 
 #define VERTEX_PER_INTERVAL 256
-#define NUM_UPDATE_BIN_ENTRIES 4096
 #define VERTEX_TO_INTERVAL(x) ((x)/VERTEX_PER_INTERVAL)
 #define INTERVAL_TO_VERTEX(x) ((x)*VERTEX_PER_INTERVAL)
 
@@ -122,6 +121,15 @@ typedef struct {
 } graph_t;
 
 } /* C */
+
+void dump_desc(desc_t *d)
+{
+    printf("seq_id=%llu, status_cl_addr=%llx, update_bin_cl_addr=%llx, vertex_cl_addr=%llx," \
+            "vertex_ncl=%u, vertex_idx=%u, edge_cl_addr=%llx, edge_ncl=%u, level=%d, next_desc_cl_addr=%llx\n",
+            d->seq_id, d->status_cl_addr, d->update_bin_cl_addr, d->vertex_cl_addr,
+            d->vertex_ncl, d->vertex_idx, d->edge_cl_addr, d->edge_ncl, d->level,
+            d->next_desc_cl_addr);
+}
 
 graph_t *graph_init(VAI_SVC_WRAPPER *fpga, int num_v, int num_e, char *filename)
 {
@@ -211,14 +219,18 @@ graph_t *graph_init(VAI_SVC_WRAPPER *fpga, int num_v, int num_e, char *filename)
         g->intervals[i].num_edges = ne;
         g->intervals[i].num_cls = ncl;
 
-        printf("[%d]: edge_off: %x, edge_cl: %#lx, num_edges: %x, num_cls: %x\n",
-                    i, start_off, start_cl, ne, ncl);
+#if 1
+        if (debug) {
+            printf("[%d]: edge_off: %x, edge_cl: %#lx, num_edges: %x, num_cls: %x\n",
+                        i, start_off, start_cl, ne, ncl);
+        }
+#endif
 
         volatile status_t *stat = (status_t *) fpga->allocBuffer(sizeof(status_t));
         desc_t *desc = (desc_t *) fpga->allocBuffer(sizeof(desc_t));
 
         g->intervals[i].update_bin =
-            (update_t *) fpga->allocBuffer(sizeof(update_t) * NUM_UPDATE_BIN_ENTRIES);
+            (update_t *) fpga->allocBuffer(sizeof(update_t) * ne);
         g->intervals[i].status = stat;
         g->intervals[i].desc = desc;
         g->intervals[i].num_updates = 0;
@@ -313,6 +325,16 @@ int sssp(VAI_SVC_WRAPPER *fpga, graph_t *g, int root)
             prev_desc = curr_desc;
         }
 
+        if (debug) {
+            for (i = 0; i < g->num_intervals; i++) {
+                interval_t *curr = &g->intervals[i];
+                if (curr->num_active_vertices == 0) {
+                    continue;
+                }
+                dump_desc(curr->desc);
+            }
+        }
+
         curr_desc->next_desc_cl_addr = 0;
 
         /* scatter */
@@ -324,8 +346,8 @@ int sssp(VAI_SVC_WRAPPER *fpga, graph_t *g, int root)
             }
 
             while (curr->status->valid == 0) {
-                printf("[%d]: polling... state=%16llx\n", i, fpga->mmioRead64(MMIO_CSR_CONTROL));
-                usleep(500000);
+                //printf("[%d]: polling... state=%16llx\n", i, fpga->mmioRead64(MMIO_CSR_CONTROL));
+                //usleep(5000);
             }
         }
 
@@ -338,7 +360,7 @@ int sssp(VAI_SVC_WRAPPER *fpga, graph_t *g, int root)
             curr->num_active_vertices = 0;
             curr->num_updates = curr->status->size;
 
-#if 1
+#if 0
             for (j = 0; j < curr->num_updates; j++) {
                 printf("[%d]: update: vertex %d to %d\n",
                         i,
@@ -435,6 +457,8 @@ int main(int argc, char *argv[])
     }
 
     graph_t *graph = graph_init(&fpga, num_v, num_e, filename);
+
+    printf("read done\n");
 
     if (debug) {
         printf("read done\n");
