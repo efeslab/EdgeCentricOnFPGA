@@ -6,6 +6,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <unistd.h>
+#include <sys/time.h>
 
 #include "vai_svc_wrapper.h"
 
@@ -137,6 +138,7 @@ graph_t *graph_init(VAI_SVC_WRAPPER *fpga, int num_v, int num_e, char *filename)
     FILE *fp;
     uint32_t s, d;
     int num_intervals;
+    int mark;
 
     if ((fp = fopen(filename, "r")) == NULL) {
         fprintf(stderr, "Cannot open file. Check the name.\n");
@@ -149,6 +151,8 @@ graph_t *graph_init(VAI_SVC_WRAPPER *fpga, int num_v, int num_e, char *filename)
     g->vertices = (vertex_t *) fpga->allocBuffer(sizeof(vertex_t) * ((num_v-1)/8+1)*8);
     g->edges = (edge_t *) fpga->allocBuffer(sizeof(edge_t) * ((num_e-1)/8+1)*8);
     g->v2e = (v2e_t *) malloc(sizeof(v2e_t) * num_v);
+
+    mark = num_e / 50;
 
     for (i = 0; i < num_v; i++) {
         g->vertices[i] = VERTEX(0, 0, 1);
@@ -168,6 +172,10 @@ graph_t *graph_init(VAI_SVC_WRAPPER *fpga, int num_v, int num_e, char *filename)
     }
         
     for (i = 1; i < num_e; i++) {
+        if (i % mark == 0) {
+            printf("#");
+            fflush(stdout);
+        }
         if (fscanf(fp, "%u %u\n", &s, &d) != EOF) {
             g->edges[i] = EDGE(s, d, (uint32_t)rand()%64);
             g->v2e[s].count++;
@@ -183,13 +191,23 @@ graph_t *graph_init(VAI_SVC_WRAPPER *fpga, int num_v, int num_e, char *filename)
         }
     }
 
+    printf("\n");
+    fflush(stdout);
+
     fclose(fp);
 
     num_intervals = (num_v - 1) / VERTEX_PER_INTERVAL + 1;
     g->intervals = (interval_t *)malloc(sizeof(interval_t)*num_intervals);
     g->num_intervals = num_intervals;
 
+    mark = num_intervals / 50;
+
     for (i = 0; i < num_intervals; i++) {
+        if (i % mark == 0) {
+            printf("#");
+            fflush(stdout);
+        }
+
         int off = i * VERTEX_PER_INTERVAL;
 
         int start_off, end_off, ne;
@@ -278,6 +296,13 @@ error:
     return NULL;
 }
 
+void graph_weight_clear(graph_t *g)
+{
+    for (int i = 0; i < g->num_v; i++) {
+        g->vertices[i] = VERTEX(0, 0, 1);
+    }
+}
+
 int sssp(VAI_SVC_WRAPPER *fpga, graph_t *g, int root)
 {
     int have_update;
@@ -347,7 +372,7 @@ int sssp(VAI_SVC_WRAPPER *fpga, graph_t *g, int root)
 
             while (curr->status->valid == 0) {
                 //printf("[%d]: polling... state=%16llx\n", i, fpga->mmioRead64(MMIO_CSR_CONTROL));
-                //usleep(5000);
+                //usleep(50000);
             }
         }
 
@@ -426,9 +451,10 @@ int main(int argc, char *argv[])
     int opt;
     int num_v = -1, num_e = -1;
     int root = -1;
+    int cmod = 0;
     char *filename = NULL;
 
-    while ((opt = getopt (argc, argv, ":v:e:r:f:d")) != -1) {
+    while ((opt = getopt (argc, argv, ":v:e:r:f:dc")) != -1) {
         switch (opt) {
             case 'v':
                 num_v = atoi(optarg);
@@ -445,6 +471,9 @@ int main(int argc, char *argv[])
             case 'd':
                 debug = 1;
                 break;
+            case 'c':
+                cmod = 1;
+                break;
             case '?':
                 printf("Unknown option: %c\n", opt);
                 return -EINVAL;
@@ -457,12 +486,7 @@ int main(int argc, char *argv[])
     }
 
     graph_t *graph = graph_init(&fpga, num_v, num_e, filename);
-
     printf("read done\n");
-
-    if (debug) {
-        printf("read done\n");
-    }
 
     if (graph == NULL) {
         return -ENOENT;
@@ -472,15 +496,41 @@ int main(int argc, char *argv[])
         return -EFAULT;
     }
 
-    sssp(&fpga, graph, root);
+    if (!cmod) {
+        sssp(&fpga, graph, root);
 
-    int i, cnt = 0;
-    for (i = 0; i < graph->num_v; i++) {
-        if (graph->vertices[i].winf == 0) {
-            cnt++;
+        int i, cnt = 0;
+        for (i = 0; i < graph->num_v; i++) {
+            if (graph->vertices[i].winf == 0) {
+                cnt++;
+            }
         }
+        printf("vertex %d connects to %d of %d vertices\n", root, cnt, graph->num_v);
+
+        return 0;
     }
-    printf("vertex %d connects to %d of %d vertices\n", root, cnt, graph->num_v);
+
+    while (true) {
+        struct timeval before, after;
+        gettimeofday(&before, NULL);
+        
+        int rv = root;
+        int i, cnt = 0;
+
+        sssp(&fpga, graph, rv);
+        for (i = 0; i < graph->num_v; i++) {
+            if (graph->vertices[i].winf == 0) {
+                cnt++;
+            }
+        }
+        printf("vertex %d connects to %d of %d vertices\n", rv, cnt, graph->num_v);
+        graph_weight_clear(graph);
+        fpga.reset();
+        gettimeofday(&after, NULL);
+        printf("Time in seconds: %lf seconds\n",
+                ((after.tv_sec - before.tv_sec)
+                    +(after.tv_usec - before.tv_usec)/1000000.0));
+    }
 
     return 0;
 }
