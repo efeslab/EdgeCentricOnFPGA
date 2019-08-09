@@ -153,6 +153,7 @@ graph_t *graph_init(VAI_SVC_WRAPPER *fpga, int num_v, int num_e, char *filename)
     g->v2e = (v2e_t *) malloc(sizeof(v2e_t) * num_v);
 
     mark = num_e / 50;
+    if (mark == 0) mark = 1;
 
     for (i = 0; i < num_v; i++) {
         g->vertices[i] = VERTEX(0, 0, 1);
@@ -201,6 +202,7 @@ graph_t *graph_init(VAI_SVC_WRAPPER *fpga, int num_v, int num_e, char *filename)
     g->num_intervals = num_intervals;
 
     mark = num_intervals / 50;
+    if (mark == 0) mark = 1;
 
     for (i = 0; i < num_intervals; i++) {
         if (i % mark == 0) {
@@ -514,7 +516,7 @@ int main(int argc, char *argv[])
         struct timeval before, after;
         gettimeofday(&before, NULL);
         
-        int rv = root;
+        int rv = rand()%graph->num_v;
         int i, cnt = 0;
 
         sssp(&fpga, graph, rv);
@@ -527,7 +529,7 @@ int main(int argc, char *argv[])
         graph_weight_clear(graph);
         fpga.reset();
         gettimeofday(&after, NULL);
-        printf("Time in seconds: %lf seconds\n",
+        printf(",%lf, s,\n",
                 ((after.tv_sec - before.tv_sec)
                     +(after.tv_usec - before.tv_usec)/1000000.0));
     }

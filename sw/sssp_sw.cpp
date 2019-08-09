@@ -4,6 +4,8 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <string.h>
+#include <stdlib.h>
+#include <sys/time.h>
 
 #define CL 64
 
@@ -349,6 +351,10 @@ int main(int argc, char *argv[])
         return -EFAULT;
     }
 
+    struct timeval before, after;
+    gettimeofday(&before, NULL);
+
+
     sssp_sw(graph, root);
 
     int i, cnt = 0;
@@ -358,6 +364,11 @@ int main(int argc, char *argv[])
         }
     }
     printf("vertex %d connects to %d of %d vertices\n", root, cnt, graph->num_v);
+
+    gettimeofday(&after, NULL);
+    printf("Time in seconds: %lf seconds\n",
+            ((after.tv_sec - before.tv_sec)
+                +(after.tv_usec - before.tv_usec)/1000000.0));
 
     return 0;
 }
