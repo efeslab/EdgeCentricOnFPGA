@@ -51,7 +51,7 @@ OBJS = $(addprefix $(OBJDIR)/,$(patsubst %.cpp,%.o,$(SRCS)))
 
 
 # Targets (build only $(TEST)_ase by default)
-all: $(TEST)_ase
+all: $(TEST)
 
 # AFU info from JSON file, including AFU UUID
 AFU_JSON_INFO = $(OBJDIR)/afu_json_info.h
