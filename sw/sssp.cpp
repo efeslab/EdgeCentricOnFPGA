@@ -9,15 +9,11 @@
 
 #include "vai_svc_wrapper.h"
 
-#define MMIO_CSR_STATUS_ADDR 0
-#define MMIO_CSR_VERTEX_ADDR 1
-#define MMIO_CSR_VERTEX_NCL 2
-#define MMIO_CSR_VERTEX_IDX 3
-#define MMIO_CSR_EDGE_ADDR 4
-#define MMIO_CSR_EDGE_NCL 5
-#define MMIO_CSR_UPDATE_BIN_ADDR 6
-#define MMIO_CSR_LEVEL 7
-#define MMIO_CSR_CONTROL 8
+#define MMIO_CSR_DESC_CONF 0
+#define APP_MMIO_BASE 1
+#define MMIO_CSR_VERTEX_IDX (0 + APP_MMIO_BASE)
+#define MMIO_CSR_LEVEL (1 + APP_MMIO_BASE)
+#define MMIO_CSR_CONTROL (2 + APP_MMIO_BASE)
 
 static int debug = 0;
 
@@ -84,7 +80,6 @@ typedef struct {
 } interval_t;
 
 #define VERTEX_PER_INTERVAL 256
-#define NUM_UPDATE_BIN_ENTRIES 4096
 #define VERTEX_TO_INTERVAL(x) ((x)/VERTEX_PER_INTERVAL)
 #define INTERVAL_TO_VERTEX(x) ((x)*VERTEX_PER_INTERVAL)
 
@@ -106,6 +101,14 @@ typedef struct {
     uint32_t rsvd;
     uint64_t padding[4];
 } status_t;
+
+typedef struct {
+    uint64_t in_cl_addr;
+    uint32_t in_ncl;
+    uint32_t rsvd0;
+    uint64_t out_cl_addr;
+    uint64_t notify_cl_addr;
+} dma_desc_t;
 
 } /* C */
 
@@ -201,7 +204,7 @@ graph_t *graph_init(VAI_SVC_WRAPPER *fpga, int num_v, int num_e, char *filename)
                     i, start_off, start_cl, ne, ncl);
 
         g->intervals[i].update_bin =
-            (update_t *) fpga->allocBuffer(sizeof(update_t) * NUM_UPDATE_BIN_ENTRIES);
+            (update_t *) fpga->allocBuffer(sizeof(update_t) * ne);
         g->intervals[i].num_updates = 0;
         g->intervals[i].num_active_vertices = 0;
     }
@@ -228,7 +231,7 @@ int sssp(VAI_SVC_WRAPPER *fpga, graph_t *g, int root)
     int i, j, k;
 
     status_t *status = (status_t *)fpga->allocBuffer(sizeof(status_t));
-    fpga->mmioWrite64(MMIO_CSR_STATUS_ADDR, (uint64_t)status/CL(1));
+    dma_desc_t *dma_desc = (dma_desc_t *)fpga->allocBuffer(sizeof(dma_desc_t));
 
     if (root >= g->num_v) {
         return -EFAULT;
@@ -267,18 +270,31 @@ int sssp(VAI_SVC_WRAPPER *fpga, graph_t *g, int root)
                     (g->num_v % VERTEX_PER_INTERVAL * sizeof(vertex_t) - 1) / CL(1) + 1;
             }
 
-            fpga->mmioWrite64(MMIO_CSR_VERTEX_ADDR, vertex_start_cl);
-            fpga->mmioWrite64(MMIO_CSR_VERTEX_NCL, vertex_ncl);
+            /* vertex stage */
             fpga->mmioWrite64(MMIO_CSR_VERTEX_IDX, i*VERTEX_PER_INTERVAL);
-            fpga->mmioWrite64(MMIO_CSR_EDGE_ADDR, curr->edge_start_cl);
-            fpga->mmioWrite64(MMIO_CSR_EDGE_NCL, curr->num_cls);
-            fpga->mmioWrite64(MMIO_CSR_UPDATE_BIN_ADDR, ((uint64_t)curr->update_bin) / CL(1));
             fpga->mmioWrite64(MMIO_CSR_LEVEL, current_level);
-
-            /* start */
-            status->valid = 0;
             fpga->mmioWrite64(MMIO_CSR_CONTROL, 1);
+            dma_desc->in_cl_addr = vertex_start_cl;
+            dma_desc->in_ncl = vertex_ncl;
+            dma_desc->out_cl_addr = 0;
+            dma_desc->notify_cl_addr = (uint64_t)status/CL(1);
+            status->valid = 0;
+            fpga->mmioWrite64(MMIO_CSR_DESC_CONF, (uint64_t)dma_desc/CL(1));
+            while (status->valid == 0) {
+                usleep(500000);
+                printf("pooling...\n");
+            }
 
+            printf("vertex done\n");
+
+            /* edge stage */
+            fpga->mmioWrite64(MMIO_CSR_CONTROL, 2);
+            dma_desc->in_cl_addr = curr->edge_start_cl;
+            dma_desc->in_ncl = curr->num_cls;
+            dma_desc->out_cl_addr = (uint64_t)curr->update_bin/CL(1);
+            dma_desc->notify_cl_addr = (uint64_t)status/CL(1);
+            status->valid = 0;
+            fpga->mmioWrite64(MMIO_CSR_DESC_CONF, (uint64_t)dma_desc/CL(1));
             while (status->valid == 0) {
                 usleep(500000);
                 printf("pooling...\n");

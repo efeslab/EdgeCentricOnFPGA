@@ -19,10 +19,11 @@ cci/sync_C1Tx_fifo.v
 cci/gram_sdp.v
 cci/a10_ram_sdp_wysiwyg.v
 
-sssp/app_afu.sv
 sssp/dma_read_engine.sv
 sssp/filter.sv
 sssp/graph.vh
 sssp/sssp_pipeline.sv
 sssp/sssp.sv
 sssp/vertex_ram.sv
+sssp/master_top.sv
+sssp/slave_top.sv
