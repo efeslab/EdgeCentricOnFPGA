@@ -5,25 +5,27 @@ QI:${FPGA_BBB_CCI_SRC}/BBB_ccip_async/hw/par/ccip_async_addenda.qsf
 +define+SSSP_NOMUX_NAME=ccip_std_afu
 +define+SSSP_WITHMUX_NAME=sssp_cci_top
 
-+incdir+./cci
++incdir+./dma
++incdir+./dma/cci
 +incdir+./sssp
 
-cci/cci_afu_with_mpf.sv
-cci/cci_mpf_app_conf.vh
-cci/csr_mgr.sv
-cci/cci_mpf_app_conf_default.vh
-cci/ccip_std_afu.sv
-cci/csr_mgr.vh
-cci/vendor_defines.vh
-cci/sync_C1Tx_fifo.v
-cci/gram_sdp.v
-cci/a10_ram_sdp_wysiwyg.v
+dma/cci/cci_afu_with_mpf.sv
+dma/cci/cci_mpf_app_conf.vh
+dma/cci/csr_mgr.sv
+dma/cci/cci_mpf_app_conf_default.vh
+dma/cci/ccip_std_afu.sv
+dma/cci/csr_mgr.vh
+dma/cci/vendor_defines.vh
+dma/cci/sync_C1Tx_fifo.v
+dma/cci/gram_sdp.v
+dma/cci/a10_ram_sdp_wysiwyg.v
 
-sssp/dma_read_engine.sv
+dma/dma_read_engine.sv
+dma/master_top.sv
+
 sssp/filter.sv
 sssp/graph.vh
 sssp/sssp_pipeline.sv
 sssp/sssp.sv
 sssp/vertex_ram.sv
-sssp/master_top.sv
 sssp/slave_top.sv
