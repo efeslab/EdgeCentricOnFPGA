@@ -3,7 +3,7 @@
 `include "afu_json_info.vh"
 `include "graph.vh"
 
-module app_afu
+module sssp_app_afu
 (
     input logic clk,
     cci_mpf_if.to_fiu fiu,
