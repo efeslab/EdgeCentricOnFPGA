@@ -1,10 +1,15 @@
 #include <iostream>
+#include <stdlib.h>
 using namespace std;
 
+#define NUM_V 800000
+#define FACTOR 16
+
 int main() {
-    for (int i = 0; i < 3000; i++) {
-        for (int j = 0; j < i; j+=(i%100+75)) {
-            cout << i << " " << j << endl;
+    for (int i = 0; i < NUM_V; i++) {
+        for (int j = 0; j < FACTOR; j++) {
+            int k = rand() % NUM_V;
+            cout << i << " " << k << endl;
         }
     }
     return 0;
