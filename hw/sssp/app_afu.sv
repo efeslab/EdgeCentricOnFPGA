@@ -81,7 +81,7 @@ module sssp_app_top
         sRx <= cp2af_sRx;
     end
 
-    t_if_ccip_Tx sTx, pre_sTx;
+    t_if_ccip_Tx sTx;
 	always_ff @(posedge clk)
     begin
         if (reset) begin
@@ -269,7 +269,6 @@ module sssp_app_top
         .word_out_valid(sssp_word_out_valid)
         );
 
-    logic write_result_done;
     logic responses_received;
     logic vertices_received;
     logic is_last_desc;
