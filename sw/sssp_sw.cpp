@@ -246,7 +246,8 @@ int sssp_sw(graph_t *g, int root)
 
             if (debug) {
                 for (j = 0; j < curr->num_updates; j++) {
-                    printf("update: vertex %d to %d\n",
+                    printf("[%d]: update: vertex %d to %d\n",
+                            i,
                             curr->update_bin[j].vertex,
                             curr->update_bin[j].weight);
                 }

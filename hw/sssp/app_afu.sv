@@ -152,6 +152,10 @@ module sssp_app_top
     typedef enum {
         MAIN_FSM_IDLE,
         MAIN_FSM_READ_DESC,
+        MAIN_FSM_LOAD_NEXT_DESC,
+        MAIN_FSM_PREPARE_PREFETCH,
+        MAIN_FSM_PREFETCH_DESC,
+        MAIN_FSM_PREPARE_CONFIG,
         MAIN_FSM_CONFIG,
         MAIN_FSM_READ_VERTEX, /* read vertices */
         MAIN_FSM_PROCESS_EDGE_EARLY_START, /* still receiving vertices in this stage */
@@ -170,7 +174,7 @@ module sssp_app_top
     logic dma_drop;
     logic csr_ctl_start;
     logic csr_ctl_start_q;
-    desc_t desc;
+    desc_t desc, next_desc;
 
     always_comb
     begin
@@ -268,6 +272,7 @@ module sssp_app_top
     logic write_result_done;
     logic responses_received;
     logic vertices_received;
+    logic is_last_desc;
 
     /* the main state machine */
     always_ff @(posedge clk)
@@ -284,6 +289,24 @@ module sssp_app_top
                 end
                 MAIN_FSM_READ_DESC: begin
                     if (dma_done) begin
+                        state <= MAIN_FSM_PREPARE_PREFETCH;
+                    end
+                end
+                MAIN_FSM_LOAD_NEXT_DESC: begin
+                    state <= MAIN_FSM_PREPARE_PREFETCH;
+                end
+                MAIN_FSM_PREPARE_PREFETCH: begin
+                    if (~dma_request_done) begin
+                        state <= MAIN_FSM_PREFETCH_DESC;
+                    end
+                end
+                MAIN_FSM_PREFETCH_DESC: begin
+                    if (dma_request_done || is_last_desc) begin
+                        state <= MAIN_FSM_PREPARE_CONFIG;
+                    end
+                end
+                MAIN_FSM_PREPARE_CONFIG: begin
+                    if (~dma_request_done) begin
                         state <= MAIN_FSM_CONFIG;
                     end
                 end
@@ -309,11 +332,11 @@ module sssp_app_top
                     state <= MAIN_FSM_WRITE_RESULT;
                 end
                 MAIN_FSM_WRITE_RESULT: begin
-                    if (desc.next_desc_addr == 0) begin
+                    if (is_last_desc) begin
                         state <= MAIN_FSM_FINISH;
                     end
                     else begin
-                        state <= MAIN_FSM_READ_DESC;
+                        state <= MAIN_FSM_LOAD_NEXT_DESC;
                     end
                 end
                 MAIN_FSM_FINISH: begin
@@ -325,9 +348,9 @@ module sssp_app_top
 
     assign sssp_last_input_in = dma_done && state == MAIN_FSM_PROCESS_EDGE;
 
-    logic vertex_dma_started;
-    logic edge_dma_started;
-    logic desc_dma_started;
+    logic vertex_dma_started, edge_dma_started, desc_dma_started;
+    logic prefetch_desc_received, prefetch_desc_received_q, prefetch_desc_received_qq;
+    logic desc_prefetch_dma_started;
     logic [31:0] write_cls;
     logic [31:0] num_write_req;
     logic [31:0] num_write_rsp;
@@ -367,6 +390,10 @@ module sssp_app_top
             vertex_dma_started <= 0;
             edge_dma_started <= 0;
             desc_dma_started <= 0;
+            desc_prefetch_dma_started <= 0;
+            prefetch_desc_received <= 0;
+            prefetch_desc_received_q <= 0;
+            prefetch_desc_received_qq <= 0;
             sTx.c1.valid <= 0;
             dma_src_addr <= t_ccip_clAddr'(32'hffff0000);
             dma_src_ncl <= 32'hffffffff;
@@ -381,12 +408,16 @@ module sssp_app_top
             dma_drop <= (fifo_c1tx_count >= 24);
             sTx.c1.valid <= 0;
 
+            prefetch_desc_received_q <= prefetch_desc_received;
+            prefetch_desc_received_qq <= prefetch_desc_received_q;
+
             case (state)
                 MAIN_FSM_IDLE: begin
                     dma_start <= 0;
                     desc_dma_started <= 0;
                     vertex_dma_started <= 0;
                     edge_dma_started <= 0;
+                    is_last_desc <= 0;
 
                     sssp_reset <= 1;
                     sssp_control <= 0;
@@ -423,11 +454,53 @@ module sssp_app_top
                     end
                     sssp_reset <= 1;
                 end
+                MAIN_FSM_LOAD_NEXT_DESC: begin
+                    desc <= next_desc;
+                    sssp_reset <= 1;
+
+                    /* reset vertex counters */
+                    vertex_need_cnt <= 0;
+                    vertex_receive_cnt <= 0;
+                end
+                MAIN_FSM_PREPARE_PREFETCH: begin
+                    /* we need to make dma_request_done 0 in this stage */
+                    dma_src_ncl <= 32'hffffffff;
+                end
+                MAIN_FSM_PREFETCH_DESC: begin
+                    if (desc_prefetch_dma_started) begin
+                        dma_start <= 0;
+                    end
+                    else if (desc.next_desc_addr != 0) begin
+                        dma_start <= 1;
+                        desc_prefetch_dma_started <= 1;
+                        dma_src_addr <= desc.next_desc_addr;
+                        dma_src_ncl <= 32'h1;
+                    end
+                    else begin
+                        is_last_desc <= 1;
+                        prefetch_desc_received <= 1;
+                        dma_src_ncl <= 32'h0;
+                    end
+                    sssp_reset <= 1;
+                end
+                MAIN_FSM_PREPARE_CONFIG: begin
+                    dma_src_ncl <= 32'hffffffff;
+                end
                 MAIN_FSM_CONFIG: begin
                     sssp_word_in_addr <= desc.vertex_idx;
                     write_cls <= 0;
+
+                    /* configure dma address */
+                    dma_src_addr <= desc.vertex_addr;
+                    dma_src_ncl <= desc.vertex_ncl;
                 end
                 MAIN_FSM_READ_VERTEX: begin
+                    /* we need to receive the next_desc here */
+                    if (!is_last_desc && dma_out_valid && ~prefetch_desc_received) begin
+                        next_desc <= int512_to_desc(dma_out);
+                        prefetch_desc_received <= 1;
+                    end
+
                     /* start dma when entering this state */
                     if (vertex_dma_started) begin
                         dma_start <= 0;
@@ -437,19 +510,25 @@ module sssp_app_top
                         vertex_dma_started <= 1;
                     end
 
-                    /* configure dma address */
-                    dma_src_addr <= desc.vertex_addr;
-                    dma_src_ncl <= desc.vertex_ncl;
-                    
                     /* configure vertex counters */
                     vertex_need_cnt <= 9'(desc.vertex_ncl);
-                    vertex_receive_cnt <= vertex_receive_cnt + dma_out_valid;
+                    if (prefetch_desc_received) begin
+                        vertex_receive_cnt <= vertex_receive_cnt + dma_out_valid;
+                    end
 
                     /* configure sssp */
                     sssp_control <= 2'b01;
-                    sssp_word_in_addr <= (sssp_word_in_addr + (dma_out_valid_qq << 3));
+                    if (prefetch_desc_received_qq) begin
+                        sssp_word_in_addr <= (sssp_word_in_addr + (dma_out_valid_qq << 3));
+                    end
                 end
                 MAIN_FSM_PROCESS_EDGE_EARLY_START: begin
+                    /* it is also possible that the desc comes back here */
+                    if (!is_last_desc && dma_out_valid && ~prefetch_desc_received) begin
+                        next_desc <= int512_to_desc(dma_out);
+                        prefetch_desc_received <= 1;
+                    end
+
                     /* start dma for edges when entering this state, at this time
                      * it is gauranteed that the dma read engine is in wait status */
                     if (edge_dma_started) begin
@@ -466,10 +545,13 @@ module sssp_app_top
 
                     /* configure sssp */
                     sssp_control <= 2'b01;
-                    sssp_word_in_addr <= (sssp_word_in_addr + (dma_out_valid_qq << 3));
+                    if (prefetch_desc_received_qq) begin
+                        sssp_word_in_addr <= (sssp_word_in_addr + (dma_out_valid_qq << 3));
+                    end
 
-                    /* hopefully at some time in this stage we will receive all vertices */
-                    vertex_receive_cnt <= vertex_receive_cnt + dma_out_valid;
+                    if (prefetch_desc_received) begin
+                        vertex_receive_cnt <= vertex_receive_cnt + dma_out_valid;
+                    end
                 end
                 MAIN_FSM_PROCESS_EDGE: begin
                     /* send out requests */
@@ -501,6 +583,8 @@ module sssp_app_top
                     desc_dma_started <= 0;
                     vertex_dma_started <= 0;
                     edge_dma_started <= 0;
+                    desc_prefetch_dma_started <= 0;
+                    prefetch_desc_received <= 0;
                 end
                 MAIN_FSM_FINISH: begin
                     /* do nothing here */
