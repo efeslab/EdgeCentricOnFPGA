@@ -100,9 +100,9 @@ module sssp_app_top
 	sync_C1Tx_fifo_copy #(
 		.DATA_WIDTH($bits(t_if_ccip_c1_Tx)),
 		.CTL_WIDTH(0),
-		.DEPTH_BASE2($clog2(64)),
+		.DEPTH_BASE2($clog2(256)),
 		.GRAM_MODE(3),
-		.FULL_THRESH(64-8)
+		.FULL_THRESH(256-8)
 	)
 	inst_fifo_c1tx(
 		.Resetb(reset_r),
@@ -171,7 +171,7 @@ module sssp_app_top
 
     t_ccip_clAddr csr_first_desc_addr;
     logic [3:0] dma_state;
-    logic dma_drop;
+    logic dma_pause;
     logic csr_ctl_start;
     logic csr_ctl_start_q;
     desc_t desc, next_desc;
@@ -179,7 +179,7 @@ module sssp_app_top
     always_comb
     begin
         csrs.afu_id = `AFU_ACCEL_UUID;
-        csrs.cpu_rd_csrs[MMIO_CSR_CONTROL].data = t_ccip_mmioData'({32'h0, 15'h0, dma_drop, 8'(state), 8'(dma_state)});
+        csrs.cpu_rd_csrs[MMIO_CSR_CONTROL].data = t_ccip_mmioData'({32'h0, 15'h0, dma_pause, 8'(state), 8'(dma_state)});
     end
 
     always_ff @(posedge clk)
@@ -218,7 +218,7 @@ module sssp_app_top
         .src_addr(dma_src_addr),
         .src_ncl(dma_src_ncl),
         .start(dma_start),
-        .drop(dma_drop),
+        .pause(dma_pause),
         .c0rx(sRx.c0),
         .c0TxAlmFull(sRx.c0TxAlmFull),
         .c0tx(sTx.c0),
@@ -397,18 +397,24 @@ module sssp_app_top
             dma_src_addr <= t_ccip_clAddr'(32'hffff0000);
             dma_src_ncl <= 32'hffffffff;
             dma_start <= 0;
-            dma_drop <= 0;
+            dma_pause <= 0;
             num_write_req <= 0;
             vertex_need_cnt <= 0;
             vertex_receive_cnt <= 0;
         end
         else begin
             sssp_reset <= 0;
-            dma_drop <= (fifo_c1tx_count >= 24);
             sTx.c1.valid <= 0;
 
             prefetch_desc_received_q <= prefetch_desc_received;
             prefetch_desc_received_qq <= prefetch_desc_received_q;
+
+            if (fifo_c1tx_count >= 12) begin
+                dma_pause <= 1;
+            end
+            else if (fifo_c1tx_count <= 4) begin
+                dma_pause <= 0;
+            end
 
             case (state)
                 MAIN_FSM_IDLE: begin
