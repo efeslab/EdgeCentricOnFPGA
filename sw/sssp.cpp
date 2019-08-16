@@ -145,6 +145,10 @@ graph_t *graph_init(VAI_SVC_WRAPPER *fpga, int num_v, int num_e, char *filename)
         return NULL;
     }
 
+    if (num_v % VERTEX_PER_INTERVAL != 0) {
+        num_v = (num_v / VERTEX_PER_INTERVAL + 1) * VERTEX_PER_INTERVAL;
+    }
+
     graph_t *g = (graph_t *) fpga->allocBuffer(sizeof(graph_t));
     g->num_v = num_v;
     g->num_e = num_e;
@@ -339,6 +343,11 @@ int sssp(VAI_SVC_WRAPPER *fpga, graph_t *g, int root)
 
             curr->status->valid = 0;
             curr_desc = curr->desc;
+
+            if (curr_desc->edge_ncl == 0) {
+                continue;
+            }
+
             curr_desc->level = current_level;
             curr_desc->seq_id = (seq_id++);
 
@@ -387,7 +396,7 @@ int sssp(VAI_SVC_WRAPPER *fpga, graph_t *g, int root)
             curr->num_active_vertices = 0;
             curr->num_updates = curr->status->size;
 
-#if 0
+#if 1
             for (j = 0; j < curr->num_updates; j++) {
                 printf("[%d]: update: vertex %d to %d\n",
                         i,

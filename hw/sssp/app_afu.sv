@@ -153,8 +153,9 @@ module sssp_app_top
         MAIN_FSM_IDLE,
         MAIN_FSM_READ_DESC,
         MAIN_FSM_CONFIG,
-        MAIN_FSM_READ_VERTEX,
-        MAIN_FSM_PROCESS_EDGE,
+        MAIN_FSM_READ_VERTEX, /* read vertices */
+        MAIN_FSM_PROCESS_EDGE_EARLY_START, /* still receiving vertices in this stage */
+        MAIN_FSM_PROCESS_EDGE, /* all vertices are received */
         MAIN_FSM_WRITE_RESULT_FENCE,
         MAIN_FSM_WRITE_RESULT,
         MAIN_FSM_FINISH
@@ -203,9 +204,9 @@ module sssp_app_top
     t_ccip_clAddr dma_src_addr;
     logic [31:0] dma_src_ncl;
     logic dma_start;
-    logic [511:0] dma_out, dma_out_q;
-    logic dma_out_valid, dma_out_valid_q;
-    logic dma_done;
+    logic [511:0] dma_out, dma_out_q, dma_out_qq;
+    logic dma_out_valid, dma_out_valid_q, dma_out_valid_qq;
+    logic dma_done, dma_request_done;
 
     dma_read_engine dma_read(
         .clk(clk),
@@ -219,6 +220,7 @@ module sssp_app_top
         .c0tx(sTx.c0),
         .out(dma_out),
         .out_valid(dma_out_valid),
+        .request_done(dma_request_done),
         .done(dma_done),
         .state_out(dma_state)
         );
@@ -227,10 +229,13 @@ module sssp_app_top
     begin
         if (reset) begin
             dma_out_valid_q <= 0;
+            dma_out_valid_qq <= 0;
         end
         else begin
             dma_out_q <= dma_out;
+            dma_out_qq <= dma_out_q;
             dma_out_valid_q <= dma_out_valid;
+            dma_out_valid_qq <= dma_out_valid_q;
         end
     end
 
@@ -249,9 +254,9 @@ module sssp_app_top
         .clk(clk),
         .rst(sssp_reset | reset),
         .last_input_in(sssp_last_input_in),
-        .word_in(dma_out_q),
+        .word_in(dma_out_qq),
         .w_addr(sssp_word_in_addr),
-        .word_in_valid(dma_out_valid_q),
+        .word_in_valid(dma_out_valid_qq),
         .control(sssp_control),
         .current_level(sssp_current_level),
         .done(sssp_done),
@@ -262,6 +267,7 @@ module sssp_app_top
 
     logic write_result_done;
     logic responses_received;
+    logic vertices_received;
 
     /* the main state machine */
     always_ff @(posedge clk)
@@ -285,7 +291,12 @@ module sssp_app_top
                     state <= MAIN_FSM_READ_VERTEX;
                 end
                 MAIN_FSM_READ_VERTEX: begin
-                    if (dma_done) begin
+                    if (dma_request_done) begin
+                        state <= MAIN_FSM_PROCESS_EDGE_EARLY_START;
+                    end
+                end
+                MAIN_FSM_PROCESS_EDGE_EARLY_START: begin
+                    if (vertices_received) begin
                         state <= MAIN_FSM_PROCESS_EDGE;
                     end
                 end
@@ -306,9 +317,7 @@ module sssp_app_top
                     end
                 end
                 MAIN_FSM_FINISH: begin
-                    if (responses_received) begin
-                        state <= MAIN_FSM_IDLE;
-                    end
+                    state <= MAIN_FSM_IDLE;
                 end
             endcase
         end
@@ -322,6 +331,8 @@ module sssp_app_top
     logic [31:0] write_cls;
     logic [31:0] num_write_req;
     logic [31:0] num_write_rsp;
+    logic [8:0] vertex_need_cnt;
+    logic [8:0] vertex_receive_cnt;
 
     t_ccip_c1_ReqMemHdr default_c1_memhdr;
     t_ccip_c1_ReqFenceHdr default_c1_fencehdr;
@@ -346,6 +357,8 @@ module sssp_app_top
         default_c1_fencehdr.rsvd2 = 0;
     end
 
+    assign vertices_received = vertex_receive_cnt == vertex_need_cnt;
+
     /* dma read, sssp, and write request */
     always_ff @(posedge clk)
     begin
@@ -359,6 +372,9 @@ module sssp_app_top
             dma_src_ncl <= 32'hffffffff;
             dma_start <= 0;
             dma_drop <= 0;
+            num_write_req <= 0;
+            vertex_need_cnt <= 0;
+            vertex_receive_cnt <= 0;
         end
         else begin
             sssp_reset <= 0;
@@ -376,7 +392,10 @@ module sssp_app_top
                     sssp_control <= 0;
                     sssp_word_in_addr <= 0;
 
-                    num_write_req <= 0;
+                    vertex_need_cnt <= 0;
+                    vertex_receive_cnt <= 0;
+
+                    //num_write_req <= 0;
 
                     desc.next_desc_addr <= csr_first_desc_addr;
                 end
@@ -393,6 +412,10 @@ module sssp_app_top
                     /* configure dma address */
                     dma_src_addr <= desc.next_desc_addr;
                     dma_src_ncl <= 32'h1;
+
+                    /* reset vertex counters */
+                    vertex_need_cnt <= 0;
+                    vertex_receive_cnt <= 0;
 
                     /* config */
                     if (dma_out_valid) begin
@@ -417,21 +440,18 @@ module sssp_app_top
                     /* configure dma address */
                     dma_src_addr <= desc.vertex_addr;
                     dma_src_ncl <= desc.vertex_ncl;
+                    
+                    /* configure vertex counters */
+                    vertex_need_cnt <= 9'(desc.vertex_ncl);
+                    vertex_receive_cnt <= vertex_receive_cnt + dma_out_valid;
 
                     /* configure sssp */
                     sssp_control <= 2'b01;
-                    sssp_word_in_addr <= (sssp_word_in_addr + (dma_out_valid_q << 3));
+                    sssp_word_in_addr <= (sssp_word_in_addr + (dma_out_valid_qq << 3));
                 end
-                MAIN_FSM_PROCESS_EDGE: begin
-                    /* send out requests */
-                    sTx.c1.valid <= sssp_word_out_valid;
-                    sTx.c1.hdr <= default_c1_memhdr;
-                    sTx.c1.hdr.address <= desc.update_bin_addr + write_cls;
-                    sTx.c1.data <= sssp_word_out;
-                    write_cls <= write_cls + sssp_word_out_valid;
-                    num_write_req <= num_write_req + sssp_word_out_valid;
-
-                    /* start dma when entering this state */
+                MAIN_FSM_PROCESS_EDGE_EARLY_START: begin
+                    /* start dma for edges when entering this state, at this time
+                     * it is gauranteed that the dma read engine is in wait status */
                     if (edge_dma_started) begin
                         dma_start <= 0;
                     end
@@ -443,6 +463,22 @@ module sssp_app_top
                     /* configure dma address */
                     dma_src_addr <= desc.edge_addr;
                     dma_src_ncl <= desc.edge_ncl;
+
+                    /* configure sssp */
+                    sssp_control <= 2'b01;
+                    sssp_word_in_addr <= (sssp_word_in_addr + (dma_out_valid_qq << 3));
+
+                    /* hopefully at some time in this stage we will receive all vertices */
+                    vertex_receive_cnt <= vertex_receive_cnt + dma_out_valid;
+                end
+                MAIN_FSM_PROCESS_EDGE: begin
+                    /* send out requests */
+                    sTx.c1.valid <= sssp_word_out_valid;
+                    sTx.c1.hdr <= default_c1_memhdr;
+                    sTx.c1.hdr.address <= desc.update_bin_addr + write_cls;
+                    sTx.c1.data <= sssp_word_out;
+                    write_cls <= write_cls + sssp_word_out_valid;
+                    num_write_req <= num_write_req + sssp_word_out_valid;
 
                     /* configure sssp */
                     sssp_control <= 2'b10;
@@ -479,10 +515,11 @@ module sssp_app_top
 		if (reset) begin
 			num_write_rsp <= 32'h0;
             responses_received <= 0;
+            num_write_rsp <= 0;
 		end
         else begin
             if (state == MAIN_FSM_IDLE) begin
-                num_write_rsp <= 0;
+                //num_write_rsp <= 0;
             end
             else if (sRx.c1.rspValid == 1'b1) begin
                 num_write_rsp <= num_write_rsp + 1;

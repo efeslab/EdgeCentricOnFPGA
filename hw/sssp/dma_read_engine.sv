@@ -18,6 +18,7 @@ module dma_read_engine
     
     output logic [511:0] out,
     output logic out_valid,
+    output logic request_done,
     output logic done,
 
     output logic [3:0] state_out
@@ -25,6 +26,7 @@ module dma_read_engine
 
     typedef enum {
         STATE_IDLE,
+        STATE_AUTO_START,
         STATE_READ_RUN,
         STATE_READ_PAUSE,
         STATE_READ_DROP,
@@ -55,15 +57,18 @@ module dma_read_engine
                         state <= STATE_READ_RUN;
                     end
                 end
+                STATE_AUTO_START: begin
+                    state <= STATE_READ_RUN;
+                end
                 STATE_READ_RUN: begin
                     if (drop) begin
                         state <= STATE_READ_DROP;
                     end
-                    else if (c0TxAlmFull) begin
-                        state <= STATE_READ_PAUSE;
-                    end
                     else if (req_done) begin
                         state <= STATE_READ_WAIT;
+                    end
+                    else if (c0TxAlmFull) begin
+                        state <= STATE_READ_PAUSE;
                     end
                 end
                 STATE_READ_PAUSE: begin
@@ -83,7 +88,10 @@ module dma_read_engine
                     end
                 end
                 STATE_READ_WAIT: begin
-                    if (rsp_done) begin
+                    if (start) begin
+                        state <= STATE_AUTO_START;
+                    end
+                    else if (rsp_done) begin
                         state <= STATE_FINISH;
                     end
                     else if (drop) begin
@@ -97,6 +105,9 @@ module dma_read_engine
         end
     end
 
+    logic c0rx_valid;
+    assign c0rx_valid = c0rx.rspValid & c0rx.hdr.mdata[7:0] == drop_id;
+
     /* requset */
     always_ff @(posedge clk)
     begin
@@ -108,7 +119,8 @@ module dma_read_engine
             c0tx.valid <= 1'b0;
 
             case (state)
-                STATE_IDLE: begin
+                STATE_IDLE,
+                STATE_AUTO_START: begin
                     req_idx <= 0;
                 end
                 STATE_READ_RUN: begin
@@ -144,6 +156,24 @@ module dma_read_engine
             endcase
         end
     end
+
+    logic req_valid;
+    assign req_valid = req_idx != src_ncl && state == STATE_READ_RUN;
+    logic [31:0] on_the_fly;
+    always_ff @(posedge clk)
+    begin
+        if (reset) begin
+            on_the_fly <= 0;
+        end
+        else begin
+            case ({c0tx.valid,c0rx_valid})
+                2'b00: on_the_fly <= on_the_fly;
+                2'b01: on_the_fly <= on_the_fly - 1;
+                2'b10: on_the_fly <= on_the_fly + 1;
+                2'b11: on_the_fly <= on_the_fly;
+            endcase
+        end
+    end
                     
     logic drop_id_increased;
     /* response */
@@ -163,21 +193,25 @@ module dma_read_engine
             out_valid <= 1'b0;
             done <= 0;
             drop_id_increased <= 0;
+            request_done <= req_done;
+
+            /* Here we need to check the drop id, when mdata and drop id
+             * are not the same, the response should be dropped */
+            if (c0rx_valid) begin
+                out_valid <= 1'b1;
+                rsp_idx <= rsp_idx + 1;
+            end
 
             case (state)
-                STATE_IDLE: begin
-                    rsp_idx <= 0;
+                STATE_IDLE,
+                STATE_AUTO_START: begin
+                    rsp_idx <= 0 - on_the_fly;
                     drop_id <= 0;
                 end
                 STATE_READ_PAUSE,
                 STATE_READ_WAIT,
                 STATE_READ_RUN: begin
-                    /* Here we need to check the drop id, when mdata and drop id
-                     * are not the same, the response should be dropped */
-                    if (c0rx.rspValid && c0rx.hdr.mdata[7:0] == drop_id) begin
-                        out_valid <= 1'b1;
-                        rsp_idx <= rsp_idx + 1;
-                    end
+                    /* do nothing */
                 end
                 STATE_READ_DROP: begin
                     /* If the drop id is already increased, we do not need to

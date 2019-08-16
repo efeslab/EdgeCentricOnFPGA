@@ -122,7 +122,7 @@ module sssp_pipeline #(
 
             /* We add an additional stage here to satisfy the timing
              * requirement easier. */
-            should_update <= (word_in_valid_qq) & (control == 2'h2);
+            should_update <= (word_in_valid_qq) & (control_qq == 2'h2);
             /* We need to check the prefix since the address only
              * contains the last 8 bits. */
             prefix_match <= (w_addr_prefix == target_edge_qq.src[31:ADDR_W]);
