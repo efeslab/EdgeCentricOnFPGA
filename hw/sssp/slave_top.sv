@@ -1,6 +1,7 @@
 `include "cci_mpf_if.vh"
 `include "csr_mgr.vh"
 `include "afu_json_info.vh"
+`include "graph.vh"
 
 module slave_top #(
     parameter NUM_CSRS = 10)
