@@ -102,9 +102,9 @@ module master_top
 	sync_C1Tx_fifo_copy #(
 		.DATA_WIDTH($bits(t_if_ccip_c1_Tx)),
 		.CTL_WIDTH(0),
-		.DEPTH_BASE2($clog2(64)),
+		.DEPTH_BASE2($clog2(256)),
 		.GRAM_MODE(3),
-		.FULL_THRESH(64-8)
+		.FULL_THRESH(256-8)
 	)
 	inst_fifo_c1tx(
 		.Resetb(reset_r),
@@ -152,7 +152,7 @@ module master_top
     logic [511:0] dma_out, dma_out_q;
     logic dma_out_valid, dma_out_valid_q;
     logic dma_done;
-    logic dma_drop;
+    logic dma_pause;
 
     dma_read_engine dma_read(
         .clk(clk),
@@ -160,7 +160,7 @@ module master_top
         .src_addr(dma_src_addr),
         .src_ncl(dma_src_ncl),
         .start(dma_start),
-        .drop(dma_drop),
+        .pause(dma_pause),
         .c0rx(sRx.c0),
         .c0TxAlmFull(sRx.c0TxAlmFull),
         .c0tx(sTx.c0),
@@ -323,14 +323,20 @@ module master_top
             main_dma_started <= 0;
             desc_dma_started <= 0;
             write_cls <= 0;
-            dma_drop <= 0;
+            dma_pause <= 0;
             sTx.c1.valid <= 0;
         end
         else begin
             sTx.c1.valid <= 0;
             slave_dma_in_valid <= 0;
             slave_dma_done <= 0;
-            dma_drop <= (fifo_c1tx_count >= 24);
+
+            if (fifo_c1tx_count >= 12) begin
+                dma_pause <= 1;
+            end
+            else if (fifo_c1tx_count <= 4) begin
+                dma_pause <= 0;
+            end
 
             case (state)
                 MASTER_IDLE: begin

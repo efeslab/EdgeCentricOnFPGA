@@ -29,6 +29,9 @@ module sssp_pipeline #(
     logic [1:0] control_qq;
     logic [1:0] control_qqq;
 
+    logic [15:0] current_level_q;
+    logic [15:0] current_level_qq;
+
     logic word_in_valid_q;
     logic word_in_valid_qq;
     logic word_in_valid_qqq;
@@ -77,6 +80,9 @@ module sssp_pipeline #(
             control_qq <= 2'h0;
             control_qqq <= 2'h0;
 
+            current_level_q <= 15'h0;
+            current_level_qq <= 15'h0;
+
             last_input_out <= 1'b0;
             last_input_q <= 1'b0;
             last_input_qq <= 1'b0;
@@ -104,6 +110,9 @@ module sssp_pipeline #(
             control_qq <= control_q;
             control_q <= control;
 
+            current_level_qq <= current_level_q;
+            current_level_q <= current_level;
+
 			last_input_out <= last_input_qqq;
 			last_input_qqq <= last_input_qq;
 			last_input_qq <= last_input_q;
@@ -122,11 +131,11 @@ module sssp_pipeline #(
 
             /* We add an additional stage here to satisfy the timing
              * requirement easier. */
-            should_update <= (word_in_valid_qq) & (control == 2'h2);
+            should_update <= (word_in_valid_qq) & (control_qq == 2'h2);
             /* We need to check the prefix since the address only
              * contains the last 8 bits. */
             prefix_match <= (w_addr_prefix == target_edge_qq.src[31:ADDR_W]);
-            level_match <= (vertex_out.level == current_level);
+            level_match <= (vertex_out.level == current_level_qq);
             /* Currently we just check whether src == dst, however, we
              * should have a bit to indicate whether an edge is valid. */
             edge_valid <= (target_edge_qq.src != target_edge_qq.dst);

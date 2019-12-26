@@ -2,6 +2,24 @@
 `define GRAPH_VH
 
 typedef struct packed {
+    logic [31:0] vertex_idx;
+    logic [15:0] level;
+    logic [7:0] vertex_ncl;
+    logic [15:0] edge_ncl;
+} meta_t;
+
+function meta_t cl_to_meta(
+    logic [511:0] cl
+);
+    meta_t meta;
+    meta.vertex_idx = cl[31:0];
+    meta.level = cl[47:32];
+    meta.vertex_ncl = cl[71:64];
+    meta.edge_ncl = cl[111:96];
+    return meta;
+endfunction
+
+typedef struct packed {
     logic [31:0] weight;
     logic [15:0] level;
     logic winf;

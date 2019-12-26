@@ -6,7 +6,6 @@
 #include <string.h>
 #include <stdint.h>
 #include <unistd.h>
-#include <cassert>
 
 #include "vai_svc_wrapper.h"
 
@@ -75,6 +74,7 @@ typedef struct {
       uint32_t num_edges;
       uint32_t num_cls;
 
+      update_t *update_bin;
       uint32_t num_updates;
       uint32_t num_active_vertices;
 } interval_t;
@@ -93,8 +93,6 @@ typedef struct {
     int num_intervals;
     interval_t *intervals;
 
-    void *fpga_buffer;
-
 } graph_t;
 
 typedef struct {
@@ -112,19 +110,6 @@ typedef struct {
     uint64_t notify_cl_addr;
 } dma_desc_t;
 
-typedef struct {
-    uint32_t vertex_idx;
-    uint16_t level;
-    uint16_t padding0;
-
-    uint8_t  vertex_ncl;
-    uint8_t  padding1[3];
-    uint16_t edge_ncl;
-    uint8_t  padding2[2];
-
-    uint64_t padding3[6];
-} meta_t;
-
 } /* C */
 
 graph_t *graph_init(VAI_SVC_WRAPPER *fpga, int num_v, int num_e, char *filename)
@@ -139,17 +124,12 @@ graph_t *graph_init(VAI_SVC_WRAPPER *fpga, int num_v, int num_e, char *filename)
         return NULL;
     }
 
-    graph_t *g = (graph_t *) aligned_alloc(64, sizeof(graph_t));
+    graph_t *g = (graph_t *) fpga->allocBuffer(sizeof(graph_t));
     g->num_v = num_v;
     g->num_e = num_e;
-    g->vertices = (vertex_t *) aligned_alloc(64, sizeof(vertex_t) * ((num_v-1)/8+1)*8);
-    g->edges = (edge_t *) aligned_alloc(64, sizeof(edge_t) * ((num_e-1)/8+1)*8);
-    g->v2e = (v2e_t *) aligned_alloc(64, sizeof(v2e_t) * num_v);
-
-    g->fpga_buffer = (void *) fpga->allocBuffer(
-            sizeof(vertex_t) * ((num_v-1)/8+1)*8 +
-            sizeof(edge_t) * ((num_e-1)/8+1)*8 +
-            sizeof(meta_t) * ((num_v - 1) / VERTEX_PER_INTERVAL + 1));
+    g->vertices = (vertex_t *) fpga->allocBuffer(sizeof(vertex_t) * ((num_v-1)/8+1)*8);
+    g->edges = (edge_t *) fpga->allocBuffer(sizeof(edge_t) * ((num_e-1)/8+1)*8);
+    g->v2e = (v2e_t *) malloc(sizeof(v2e_t) * num_v);
 
     for (i = 0; i < num_v; i++) {
         g->vertices[i] = VERTEX(0, 0, 1);
@@ -187,7 +167,7 @@ graph_t *graph_init(VAI_SVC_WRAPPER *fpga, int num_v, int num_e, char *filename)
     fclose(fp);
 
     num_intervals = (num_v - 1) / VERTEX_PER_INTERVAL + 1;
-    g->intervals = (interval_t *) aligned_alloc(64, sizeof(interval_t)*num_intervals);
+    g->intervals = (interval_t *)malloc(sizeof(interval_t)*num_intervals);
     g->num_intervals = num_intervals;
 
     for (i = 0; i < num_intervals; i++) {
@@ -223,6 +203,8 @@ graph_t *graph_init(VAI_SVC_WRAPPER *fpga, int num_v, int num_e, char *filename)
         printf("[%d]: edge_off: %x, edge_cl: %#lx, num_edges: %x, num_cls: %x\n",
                     i, start_off, start_cl, ne, ncl);
 
+        g->intervals[i].update_bin =
+            (update_t *) fpga->allocBuffer(sizeof(update_t) * ne);
         g->intervals[i].num_updates = 0;
         g->intervals[i].num_active_vertices = 0;
     }
@@ -248,7 +230,7 @@ int sssp(VAI_SVC_WRAPPER *fpga, graph_t *g, int root)
     int current_level;
     int i, j, k;
 
-    volatile status_t *status = (status_t *)fpga->allocBuffer(sizeof(status_t));
+    status_t *status = (status_t *)fpga->allocBuffer(sizeof(status_t));
     dma_desc_t *dma_desc = (dma_desc_t *)fpga->allocBuffer(sizeof(dma_desc_t));
 
     if (root >= g->num_v) {
@@ -261,11 +243,6 @@ int sssp(VAI_SVC_WRAPPER *fpga, graph_t *g, int root)
     current_level = 1;
 
     while (have_update) {
-        uint8_t *p8curr = (uint8_t*)g->fpga_buffer;
-        meta_t *pmeta = NULL;;
-
-        printf("p8curr=%#016x\n", p8curr);
-
         have_update = 0;
         int active_cnt = 0;
 
@@ -293,77 +270,77 @@ int sssp(VAI_SVC_WRAPPER *fpga, graph_t *g, int root)
                     (g->num_v % VERTEX_PER_INTERVAL * sizeof(vertex_t) - 1) / CL(1) + 1;
             }
 
-            /* add meta data */
-            pmeta = (meta_t *) p8curr;
-            pmeta->vertex_idx = i * VERTEX_PER_INTERVAL;
-            pmeta->level = current_level;
-            p8curr += sizeof(meta_t);
-            if (debug) {
-                printf("p8curr=%#016x\n", p8curr);
+            /* vertex stage */
+            fpga->mmioWrite64(MMIO_CSR_VERTEX_IDX, i*VERTEX_PER_INTERVAL);
+            fpga->mmioWrite64(MMIO_CSR_LEVEL, current_level);
+            fpga->mmioWrite64(MMIO_CSR_CONTROL, 1);
+            dma_desc->in_cl_addr = vertex_start_cl;
+            dma_desc->in_ncl = vertex_ncl;
+            dma_desc->out_cl_addr = 0;
+            dma_desc->notify_cl_addr = (uint64_t)status/CL(1);
+            status->valid = 0;
+            fpga->mmioWrite64(MMIO_CSR_DESC_CONF, (uint64_t)dma_desc/CL(1));
+            while (status->valid == 0) {
+                usleep(500000);
+                printf("pooling...\n");
             }
 
-            /* add vertex */
-            memcpy(p8curr, &g->vertices[i*VERTEX_PER_INTERVAL], vertex_ncl * CL(1));
-            p8curr += vertex_ncl * CL(1);
-            pmeta->vertex_ncl = vertex_ncl;
-            if (debug) {
-                printf("p8curr=%#016x\n", p8curr);
-            }
-            assert(pmeta->vertex_ncl == 0x20);
+            printf("vertex done\n");
 
-            /* add edge */
-            memcpy(p8curr, (void *)(curr->edge_start_cl*CL(1)), curr->num_cls * CL(1));
-            p8curr += curr->num_cls * CL(1);
-            pmeta->edge_ncl = curr->num_cls;
-            if (debug) {
-                printf("p8curr=%#016x\n", p8curr);
+            /* edge stage */
+            fpga->mmioWrite64(MMIO_CSR_CONTROL, 2);
+            dma_desc->in_cl_addr = curr->edge_start_cl;
+            dma_desc->in_ncl = curr->num_cls;
+            dma_desc->out_cl_addr = (uint64_t)curr->update_bin/CL(1);
+            dma_desc->notify_cl_addr = (uint64_t)status/CL(1);
+            status->valid = 0;
+            fpga->mmioWrite64(MMIO_CSR_DESC_CONF, (uint64_t)dma_desc/CL(1));
+            while (status->valid == 0) {
+                usleep(500000);
+                printf("pooling...\n");
             }
 
-            if (debug) {
-                printf("vertex_idx=%#x\nlevel=%#x\nvertex_ncl=%d\nedge_ncl=%d\n",
-                        pmeta->vertex_idx, pmeta->level, pmeta->vertex_ncl, pmeta->edge_ncl);
-            }
-        }
+            curr->num_updates = status->size;
 
-        if (debug) {
-            printf("p8curr=%#016x\n", p8curr);
-        }
-
-        dma_desc->in_cl_addr = (uint64_t)g->fpga_buffer/CL(1);
-        dma_desc->in_ncl = (p8curr - (uint8_t*)g->fpga_buffer)/CL(1);
-        dma_desc->out_cl_addr = (uint64_t)g->fpga_buffer/CL(1);
-        dma_desc->notify_cl_addr = (uint64_t)status/CL(1);
-        status->valid = 0;
-
-        //printf("dma_ncl=%d\n", dma_desc->in_ncl);
-
-        fpga->mmioWrite64(MMIO_CSR_DESC_CONF, (uint64_t)dma_desc/CL(1));
-        while (status->valid == 0) {
-            usleep(500000);
-            printf("pooling...\n");
-        }
-
-        update_t *update_bin = (update_t*)g->fpga_buffer;
-        for (i = 0; i < status->size; i++) {
-            update_t *update = &update_bin[i];
-            vertex_t *update_vertex = &g->vertices[update->vertex];
-            int vertex_interval = VERTEX_TO_INTERVAL(update->vertex);
-
-            if (debug) {
+            for (j = 0; j < curr->num_updates; j++) {
                 printf("update: vertex %d to %d\n",
-                        update->vertex,
-                        update->weight);
+                        curr->update_bin[j].vertex,
+                        curr->update_bin[j].weight);
+            }
+        }
+
+
+
+        /* gather */
+        for (i = 0; i < g->num_intervals; i++) {
+            interval_t *curr = &g->intervals[i];
+            if (curr->num_updates == 0) {
+                continue;
             }
 
-            /* do the update */
-            if (update_vertex->winf == 1 /* the value of the vertex is inf */
-                    || update_vertex->weight > update->weight) {
-                update_vertex->weight = update->weight;
-                update_vertex->level = current_level + 1;
-                update_vertex->winf = 0;
-                g->intervals[vertex_interval].num_active_vertices++;
-                active_cnt++;
+            for (j = 0; j < curr->num_updates; j++) {
+                update_t *update = &curr->update_bin[j];
+                vertex_t *update_vertex = &g->vertices[update->vertex];
+                int vertex_interval = VERTEX_TO_INTERVAL(update->vertex);
+
+                /* do the update */
+                if (update_vertex->winf == 1 /* the value of the vertex is inf */
+                        || update_vertex->weight > update->weight) {
+                    if (debug) {
+                        printf("interval %d: update interval %d vertex %d, %d -> %d\n",
+                                j, vertex_interval, update->vertex,
+                                update_vertex->winf?-1:update_vertex->weight,
+                                update->weight);
+                    }
+                    update_vertex->weight = update->weight;
+                    update_vertex->level = current_level + 1;
+                    update_vertex->winf = 0;
+                    g->intervals[vertex_interval].num_active_vertices++;
+                    active_cnt++;
+                }
             }
+
+            curr->num_updates = 0;
         }
 
         for (i = 0; i < g->num_intervals; i++) {
